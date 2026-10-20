@@ -26,20 +26,21 @@ def _notifier(dry_run: bool):
 
 
 def cmd_run(args) -> int:
-    from .ai import Analyst
+    from .ai import make_analyst
     from .pipeline import run_once
 
     cfg = load_config()
-    require_env("ANTHROPIC_API_KEY")
+    require_env(cfg.api_key_env)
     notifier = _notifier(args.dry_run)
     state = State.load(cfg.state_path)
-    analyst = Analyst(cfg)
+    analyst = make_analyst(cfg)
     now = utcnow()
     report = run_once(cfg, state, analyst, notifier, now)
     state.save()
     print(report.summary())
     u = analyst.usage
-    print(f"AI: {u['calls']} ครั้ง, input {u['input_tokens']:,} / output {u['output_tokens']:,} tokens")
+    print(f"AI ({cfg.ai_provider}): {u['calls']} ครั้ง, "
+          f"input {u['input_tokens']:,} / output {u['output_tokens']:,} tokens")
     # A broken feed is only a warning; failing to reach the AI or LINE is an error.
     return 1 if report.errors else 0
 

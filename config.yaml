@@ -29,11 +29,20 @@ fetch:
   timeout_seconds: 20
 
 # ---------- AI ----------
+# provider: gemini = ใช้ฟรี (free tier ของ Google AI Studio) ต้องมี GEMINI_API_KEY
+#           claude = เสียเงินตามการใช้จริง ต้องมี ANTHROPIC_API_KEY
 ai:
-  triage_model: "claude-haiku-5-5"      # ตัวคัดกรอง/จัดกลุ่ม (ถูก เร็ว)
-  triage_effort: "low"
-  analysis_model: "claude-sonnet-5-5"   # ตัววิเคราะห์ละเอียด + เขียนแคปชัน
-  analysis_effort: "medium"
+  provider: gemini
+  gemini:
+    triage_model: "gemini-3.5-flash-lite"   # ตัวคัดกรอง/จัดกลุ่มข่าว
+    triage_level: "low"                     # ระดับการคิด: minimal / low / medium / high
+    analysis_model: "gemini-3.8-flash"      # ตัววิเคราะห์ละเอียด + เขียนแคปชัน
+    analysis_level: "medium"
+  claude:
+    triage_model: "claude-haiku-5-5"
+    triage_level: "low"
+    analysis_model: "claude-sonnet-5-5"
+    analysis_level: "medium"
 
 # ---------- แหล่งข่าว (RSS) ----------
 # official: true = หน่วยงานรัฐ ใช้ยืนยันข้อเท็จจริงได้

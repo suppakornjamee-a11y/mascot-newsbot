@@ -7,10 +7,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import httpx2 as httpx
 import anthropic
+import httpx
+import httpx2
 
-from newsbot.ai import Analyst, TriageGroup
+from newsbot.ai import AIError, ClaudeAnalyst, GeminiAnalyst, TriageGroup
 from newsbot.config import TZ, Config, Mascot, Source
 from newsbot.fetch import parse_feed
 from newsbot.line import ConsoleNotifier, build_alert_messages, build_digest_message
@@ -44,6 +45,13 @@ SRC_A = Source("สำนักข่าว A", "https://a.example.com/feed")
 SRC_B = Source("สำนักข่าว B", "https://b.example.com/feed")
 SRC_TMD = Source("กรมอุตุฯ", "https://tmd.example.go.th/xml", official=True,
                  link="https://tmd.example.go.th/quake")
+
+
+def claude_config() -> Config:
+    cfg = make_config(Path(tempfile.mkdtemp()))
+    cfg.ai_provider = "claude"
+    cfg.triage_model, cfg.analysis_model = "claude-haiku-5-5", "claude-sonnet-5-5"
+    return cfg
 
 
 def make_config(tmp: Path) -> Config:
@@ -301,11 +309,11 @@ class AnthropicRequestTests(unittest.TestCase):
 
     def _client(self, handler):
         return anthropic.Anthropic(api_key="test-key", max_retries=0,
-                                   http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+                                   http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
 
     @staticmethod
-    def _message(payload: dict) -> httpx.Response:
-        return httpx.Response(200, json={
+    def _message(payload: dict) -> httpx2.Response:
+        return httpx2.Response(200, json={
             "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
             "stop_reason": "end_turn", "stop_sequence": None,
@@ -315,14 +323,13 @@ class AnthropicRequestTests(unittest.TestCase):
     def test_triage_request_and_parse(self):
         seen = []
 
-        def handler(request: httpx.Request):
+        def handler(request: httpx2.Request):
             seen.append(json.loads(request.content))
             return self._message({"groups": [{
                 "item_indexes": [0], "existing_event_id": None, "headline": "ทดสอบ",
                 "category": "DISASTER", "urgency": 140, "sensitive": False, "promotional": False}]})
 
-        cfg = make_config(Path(tempfile.mkdtemp()))
-        analyst = Analyst(cfg, client=self._client(handler))
+        analyst = ClaudeAnalyst(claude_config(), client=self._client(handler))
         now = bkk(2026, 10, 21, 14, 5)
         items = feeds_round1(now)[SRC_A.name]
         groups = analyst.triage(items, [], now)
@@ -339,16 +346,15 @@ class AnthropicRequestTests(unittest.TestCase):
     def test_effort_rejected_falls_back(self):
         calls = []
 
-        def handler(request: httpx.Request):
+        def handler(request: httpx2.Request):
             body = json.loads(request.content)
             calls.append(body)
             if "effort" in body["output_config"]:
-                return httpx.Response(400, json={"type": "error", "error": {
+                return httpx2.Response(400, json={"type": "error", "error": {
                     "type": "invalid_request_error", "message": "effort is not supported"}})
             return self._message({"groups": []})
 
-        cfg = make_config(Path(tempfile.mkdtemp()))
-        analyst = Analyst(cfg, client=self._client(handler))
+        analyst = ClaudeAnalyst(claude_config(), client=self._client(handler))
         self.assertEqual(analyst.triage([], [], bkk(2026, 10, 21, 14)), [])
         self.assertEqual(len(calls), 2)
         self.assertNotIn("effort", calls[1]["output_config"])
@@ -371,6 +377,138 @@ class AnthropicRequestTests(unittest.TestCase):
                     check(v)
         check(TRIAGE_SCHEMA)
         check(ANALYSIS_SCHEMA)
+
+
+class GeminiRequestTests(unittest.TestCase):
+    """Checks the real google-genai SDK call shape against a mocked HTTP endpoint."""
+
+    GROUP = {"item_indexes": [0], "existing_event_id": None, "headline": "ทดสอบ",
+             "category": "disaster", "urgency": 88, "sensitive": False, "promotional": False}
+
+    def _analyst(self, handler) -> GeminiAnalyst:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key="test-key", http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handler))))
+        return GeminiAnalyst(make_config(Path(tempfile.mkdtemp())), client=client,
+                             retry_waits=(0,))
+
+    @staticmethod
+    def _reply(payload: dict, finish: str = "STOP") -> httpx.Response:
+        return httpx.Response(200, json={
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": json.dumps(payload, ensure_ascii=False)}]}, "finishReason": finish}],
+            "usageMetadata": {"promptTokenCount": 300, "candidatesTokenCount": 50,
+                              "thoughtsTokenCount": 25},
+        })
+
+    @staticmethod
+    def _error(code: int, status: str, message: str) -> httpx.Response:
+        return httpx.Response(code, json={"error": {"code": code, "message": message,
+                                                    "status": status}})
+
+    def test_request_shape_and_parse(self):
+        seen = []
+
+        def handler(request: httpx.Request):
+            seen.append((str(request.url), json.loads(request.content)))
+            return self._reply({"groups": [self.GROUP]})
+
+        analyst = self._analyst(handler)
+        now = bkk(2026, 10, 21, 14, 5)
+        groups = analyst.triage(feeds_round1(now)[SRC_A.name], [], now)
+
+        url, body = seen[0]
+        self.assertIn("models/gemini-3.5-flash-lite:generateContent", url)
+        gen = body["generationConfig"]
+        self.assertEqual(gen["responseMimeType"], "application/json")
+        self.assertIn("groups", gen["responseJsonSchema"]["properties"])
+        thinking = gen["thinkingConfig"]
+        self.assertEqual(thinking.get("thinkingLevel", thinking.get("thinking_level")), "LOW")
+        self.assertIn("บรรณาธิการข่าว", body["systemInstruction"]["parts"][0]["text"])
+        self.assertIn("น้ำท่วมฉับพลัน", body["contents"][0]["parts"][0]["text"])
+        self.assertEqual({s["threshold"] for s in body["safetySettings"]}, {"BLOCK_ONLY_HIGH"})
+        self.assertEqual(groups[0].urgency, 88)
+        self.assertEqual(analyst.usage["input_tokens"], 300)
+        self.assertEqual(analyst.usage["output_tokens"], 75)   # answer + thinking
+
+    def test_analysis_uses_analysis_model(self):
+        seen = []
+
+        def handler(request: httpx.Request):
+            seen.append(str(request.url))
+            return self._reply(FakeAnalyst().analyze(type("E", (), {
+                "headline": "h", "urgency": 80})(), None))
+
+        now = bkk(2026, 10, 21, 14, 5)
+        state = State(Path(tempfile.mkdtemp()) / "s.json")
+        ev = state.new_event("น้ำท่วม", "disaster", now)
+        ev.add_items(feeds_round1(now)[SRC_A.name][:1])
+        out = self._analyst(handler).analyze(ev, now)
+        self.assertIn("models/gemini-3.8-flash:generateContent", seen[0])
+        self.assertEqual(out["mascot_pose"], "alert")
+
+    def test_thinking_level_rejected_falls_back(self):
+        calls = []
+
+        def handler(request: httpx.Request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if "thinkingConfig" in body.get("generationConfig", {}):
+                return self._error(400, "INVALID_ARGUMENT",
+                                   "Thinking level is not supported for this model.")
+            return self._reply({"groups": []})
+
+        self.assertEqual(self._analyst(handler).triage([], [], bkk(2026, 10, 21, 14)), [])
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("thinkingConfig", calls[1]["generationConfig"])
+
+    def test_overloaded_then_ok(self):
+        calls = []
+
+        def handler(request: httpx.Request):
+            calls.append(1)
+            if len(calls) == 1:
+                return self._error(503, "UNAVAILABLE", "The model is overloaded.")
+            return self._reply({"groups": []})
+
+        self.assertEqual(self._analyst(handler).triage([], [], bkk(2026, 10, 21, 14)), [])
+        self.assertEqual(len(calls), 2)
+
+    def test_quota_exhausted_raises(self):
+        from google.genai import errors
+
+        def handler(request: httpx.Request):
+            return self._error(429, "RESOURCE_EXHAUSTED", "Quota exceeded")
+
+        with self.assertRaises(errors.ClientError):
+            self._analyst(handler).triage([], [], bkk(2026, 10, 21, 14))
+
+    def test_safety_block_raises(self):
+        def handler(request: httpx.Request):
+            return self._reply({"groups": []}, finish="SAFETY")
+
+        with self.assertRaises(AIError):
+            self._analyst(handler).triage([], [], bkk(2026, 10, 21, 14))
+
+
+class ConfigTests(unittest.TestCase):
+    def test_default_is_gemini_and_switchable(self):
+        from newsbot.config import ROOT, load_config
+
+        cfg = load_config()
+        self.assertEqual(cfg.ai_provider, "gemini")
+        self.assertEqual(cfg.api_key_env, "GEMINI_API_KEY")
+        self.assertEqual(cfg.analysis_model, "gemini-3.8-flash")
+
+        text = (ROOT / "config.yaml").read_text(encoding="utf-8").replace(
+            "provider: gemini", "provider: claude")
+        tmp = Path(tempfile.mkdtemp()) / "config.yaml"
+        tmp.write_text(text, encoding="utf-8")
+        cfg = load_config(tmp)
+        self.assertEqual(cfg.api_key_env, "ANTHROPIC_API_KEY")
+        self.assertEqual(cfg.triage_model, "claude-haiku-5-5")
 
 
 if __name__ == "__main__":

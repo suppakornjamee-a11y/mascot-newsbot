@@ -43,11 +43,24 @@ class Config:
     digest_max_items: int = 8
     max_item_age_hours: float = 6
     fetch_timeout: float = 20
-    triage_model: str = "claude-haiku-5-5"
-    triage_effort: str | None = "low"
-    analysis_model: str = "claude-sonnet-5-5"
+    ai_provider: str = "gemini"            # gemini (free tier) | claude (paid)
+    triage_model: str = "gemini-3.5-flash-lite"
+    triage_effort: str | None = "low"      # Claude effort / Gemini thinking level
+    analysis_model: str = "gemini-3.8-flash"
     analysis_effort: str | None = "medium"
     state_path: Path = ROOT / "data" / "state.json"
+
+    @property
+    def api_key_env(self) -> str:
+        return "ANTHROPIC_API_KEY" if self.ai_provider == "claude" else "GEMINI_API_KEY"
+
+
+AI_DEFAULTS = {
+    "gemini": {"triage_model": "gemini-3.5-flash-lite", "triage_level": "low",
+               "analysis_model": "gemini-3.8-flash", "analysis_level": "medium"},
+    "claude": {"triage_model": "claude-haiku-5-5", "triage_level": "low",
+               "analysis_model": "claude-sonnet-5-5", "analysis_level": "medium"},
+}
 
 
 def load_dotenv(path: Path) -> None:
@@ -85,6 +98,10 @@ def load_config(path: Path | None = None) -> Config:
         )
 
     defaults = Config(mascot=Mascot(), sources=[])
+    provider = str(ai.get("provider", "gemini")).strip().lower()
+    if provider not in AI_DEFAULTS:
+        raise SystemExit(f"ai.provider ต้องเป็น gemini หรือ claude (ตอนนี้คือ '{provider}')")
+    p = {**AI_DEFAULTS[provider], **(ai.get(provider) or {})}
     return Config(
         mascot=Mascot(
             name=str(m.get("name", defaults.mascot.name)),
@@ -103,10 +120,11 @@ def load_config(path: Path | None = None) -> Config:
         digest_max_items=int(digest.get("max_items", defaults.digest_max_items)),
         max_item_age_hours=float(fetch.get("max_item_age_hours", defaults.max_item_age_hours)),
         fetch_timeout=float(fetch.get("timeout_seconds", defaults.fetch_timeout)),
-        triage_model=str(ai.get("triage_model", defaults.triage_model)),
-        triage_effort=ai.get("triage_effort", defaults.triage_effort) or None,
-        analysis_model=str(ai.get("analysis_model", defaults.analysis_model)),
-        analysis_effort=ai.get("analysis_effort", defaults.analysis_effort) or None,
+        ai_provider=provider,
+        triage_model=str(p["triage_model"]),
+        triage_effort=p.get("triage_level") or None,
+        analysis_model=str(p["analysis_model"]),
+        analysis_effort=p.get("analysis_level") or None,
     )
 
 
