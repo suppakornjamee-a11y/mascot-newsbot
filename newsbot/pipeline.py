@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
@@ -219,3 +221,48 @@ def run_once(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
     send_digest(cfg, state, notifier, now, report)
     state.prune(now)
     return report
+
+
+# ---------------------------------------------------------------- demo
+DEMO_MAX_ITEMS = 120
+
+
+@dataclass
+class DemoResult:
+    sent: bool
+    headline: str = ""
+    urgency: int = 0
+    sources: list[str] = field(default_factory=list)
+    candidates: int = 0
+    message: str = ""
+
+
+def run_demo(cfg: Config, analyst: Analyst, notifier: Notifier, now: datetime,
+             fetcher: Fetcher = default_fetcher, hours: float = 24) -> DemoResult:
+    """Pick the most urgent story of the last ``hours`` and send it as a sample alert.
+
+    Ignores the alert threshold and quiet hours, and works on a throwaway state so
+    the real history in data/state.json is never touched.
+    """
+    demo_cfg = replace(cfg, max_item_age_hours=hours,
+                       state_path=Path(tempfile.mkdtemp()) / "demo-state.json")
+    state = State(demo_cfg.state_path)
+    report = RunReport()
+    items = collect_new_items(demo_cfg, state, fetcher(demo_cfg), now, report)
+    items.sort(key=lambda it: it.published or now, reverse=True)
+    items = items[:DEMO_MAX_ITEMS]
+    if not items:
+        return DemoResult(False, message="ไม่พบข่าวในช่วงเวลานี้ (ฟีดอาจใช้ไม่ได้)")
+
+    triage_items(state, analyst, items, now, report)
+    if report.errors:
+        return DemoResult(False, message="; ".join(report.errors))
+    events = [e for e in state.events.values() if not e.promotional]
+    if not events:
+        return DemoResult(False, message="ไม่มีข่าวที่เหมาะจะเป็นตัวอย่าง")
+    best = max(events, key=lambda e: (e.urgency, len(e.source_names)))
+    analysis = analyst.analyze(best, now)
+    notifier.push(build_alert_messages(best, analysis, now, cfg.mascot.name, label="ตัวอย่าง"))
+    return DemoResult(True, headline=analysis.get("headline") or best.headline,
+                      urgency=int(analysis.get("urgency", best.urgency)),
+                      sources=best.source_names, candidates=len(items))

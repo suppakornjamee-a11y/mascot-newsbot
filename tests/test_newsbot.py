@@ -493,6 +493,32 @@ class GeminiRequestTests(unittest.TestCase):
             self._analyst(handler).triage([], [], bkk(2026, 10, 21, 14))
 
 
+class DemoTests(unittest.TestCase):
+    def test_demo_sends_top_story_and_leaves_state_alone(self):
+        from newsbot.pipeline import run_demo
+
+        tmp = Path(tempfile.mkdtemp())
+        cfg = make_config(tmp)
+        now = bkk(2026, 10, 21, 3, 15)          # inside quiet hours on purpose
+        feeds = feeds_round1(now - timedelta(hours=10))  # 10 h old: beyond normal 6 h window
+        line = ConsoleNotifier(echo=False)
+        res = run_demo(cfg, FakeAnalyst(flood_score=55), line, now, fetcher=lambda c: feeds)
+
+        self.assertTrue(res.sent)
+        self.assertEqual(res.urgency, 55)                 # below the alert threshold, still sent
+        self.assertEqual(res.sources, ["สำนักข่าว A", "สำนักข่าว B"])
+        flex = line.batches[0][0]
+        self.assertTrue(flex["altText"].startswith("ตัวอย่าง (55)"))
+        self.assertFalse(cfg.state_path.exists())         # real state untouched
+
+    def test_demo_reports_empty_feeds(self):
+        from newsbot.pipeline import run_demo
+
+        res = run_demo(make_config(Path(tempfile.mkdtemp())), FakeAnalyst(),
+                       ConsoleNotifier(echo=False), bkk(2026, 10, 21, 3), fetcher=lambda c: {})
+        self.assertFalse(res.sent)
+
+
 class ConfigTests(unittest.TestCase):
     def test_default_is_gemini_and_switchable(self):
         from newsbot.config import ROOT, load_config

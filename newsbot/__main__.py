@@ -2,6 +2,7 @@
 
     python -m newsbot run              # one full round (use this in cron / GitHub Actions)
     python -m newsbot run --dry-run    # same, but print messages instead of sending to LINE
+    python -m newsbot demo             # analyse the most urgent story of the last 24 h and send it
     python -m newsbot test-line        # send a sample alert to check your LINE setup
     python -m newsbot check-sources    # check every RSS feed in config.yaml
 """
@@ -43,6 +44,26 @@ def cmd_run(args) -> int:
           f"input {u['input_tokens']:,} / output {u['output_tokens']:,} tokens")
     # A broken feed is only a warning; failing to reach the AI or LINE is an error.
     return 1 if report.errors else 0
+
+
+def cmd_demo(args) -> int:
+    from .ai import make_analyst
+    from .pipeline import run_demo
+
+    cfg = load_config()
+    require_env(cfg.api_key_env)
+    notifier = _notifier(args.dry_run)
+    analyst = make_analyst(cfg)
+    result = run_demo(cfg, analyst, notifier, utcnow())
+    if not result.sent:
+        print(f"ส่งตัวอย่างไม่ได้: {result.message}")
+        return 1
+    print(f"ส่งตัวอย่างแล้ว: {result.headline}")
+    print(f"คะแนน {result.urgency} · แหล่ง: {', '.join(result.sources)} "
+          f"· เลือกจากข่าว {result.candidates} รายการ")
+    u = analyst.usage
+    print(f"AI ({cfg.ai_provider}): {u['calls']} ครั้ง")
+    return 0
 
 
 def cmd_test_line(args) -> int:
@@ -103,6 +124,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="รันหนึ่งรอบ")
     p.add_argument("--dry-run", action="store_true", help="แสดงผลแทนการส่ง LINE")
     p.set_defaults(func=cmd_run)
+    p = sub.add_parser("demo", help="ส่งข่าวที่ด่วนที่สุดใน 24 ชม. เข้า LINE เป็นตัวอย่าง")
+    p.add_argument("--dry-run", action="store_true", help="แสดงผลแทนการส่ง LINE")
+    p.set_defaults(func=cmd_demo)
     p = sub.add_parser("test-line", help="ส่งข้อความทดสอบเข้า LINE")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_test_line)

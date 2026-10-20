@@ -60,7 +60,7 @@ def urgency_color(score: int) -> str:
 
 # ---------------------------------------------------------------- alert
 def build_alert_messages(event: Event, analysis: dict, now: datetime,
-                         mascot_name: str = "") -> list[dict]:
+                         mascot_name: str = "", label: str = "ข่าวด่วน") -> list[dict]:
     """A Flex card with the analysis + a plain-text message with the caption ready to copy."""
     score = int(analysis.get("urgency", event.urgency))
     category = CATEGORIES.get(event.category, "อื่นๆ")
@@ -120,7 +120,7 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
             "type": "box", "layout": "vertical", "backgroundColor": urgency_color(score),
             "paddingAll": "12px",
             "contents": [
-                {"type": "text", "text": f"ข่าวด่วน · คะแนน {score}", "color": "#FFFFFF",
+                {"type": "text", "text": f"{label} · คะแนน {score}", "color": "#FFFFFF",
                  "weight": "bold", "size": "sm"},
                 {"type": "text", "text": f"{category} · {event.credibility}",
                  "color": "#FFFFFF", "size": "xs"},
@@ -132,7 +132,7 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
         bubble["footer"] = {"type": "box", "layout": "vertical", "spacing": "none",
                             "contents": buttons}
 
-    alt = _cut(f"ข่าวด่วน ({score}): {headline}", 400)
+    alt = _cut(f"{label} ({score}): {headline}", 400)
     caption_msg = {"type": "text", "text": _cut(build_post_text(event, analysis), 4900)}
     return [{"type": "flex", "altText": alt, "contents": bubble}, caption_msg]
 
