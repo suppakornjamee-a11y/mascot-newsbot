@@ -31,11 +31,9 @@ CATEGORIES = {
     "other": "อื่นๆ",
 }
 
-POSES = ["alert", "serious", "sad", "happy", "thinking", "surprised"]
-POSE_LABELS = {
-    "alert": "เตือนภัย", "serious": "จริงจัง", "sad": "เศร้า/เห็นใจ",
-    "happy": "ดีใจ", "thinking": "ครุ่นคิด", "surprised": "ตกใจ",
-}
+MOODS = ["smile", "excited", "serious"]
+MOOD_LABELS = {"smile": "ยิ้มสดใส", "excited": "ตื่นเต้น", "serious": "จริงจัง"}
+SERIOUS_CATEGORIES = {"disaster", "accident_crime"}
 
 URGENCY_RUBRIC = """เกณฑ์คะแนนความด่วน (urgency 0-100) สำหรับคนไทย:
 - 90-100: อันตรายหรือผลกระทบใหญ่ต่อคนจำนวนมากในไทย "ตอนนี้" เช่น ประกาศเตือนภัยพิบัติที่กำลังเกิด แผ่นดินไหวที่รู้สึกได้ในไทย เหตุที่มีผู้เสียชีวิตจำนวนมาก มาตรการรัฐที่มีผลทันทีทั่วประเทศ
@@ -91,13 +89,14 @@ ANALYSIS_SCHEMA = {
         "caution": {"type": "string"},
         "caption": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
-        "image_text": {"type": "string"},
-        "mascot_pose": {"type": "string", "enum": POSES},
-        "image_idea": {"type": "string"},
+        "card_kicker": {"type": "string"},
+        "card_headline": {"type": "string"},
+        "card_detail": {"type": "string"},
+        "mascot_mood": {"type": "string", "enum": MOODS},
     },
     "required": ["headline", "what_happened", "cause", "when", "where", "affected",
                  "missing_info", "urgency", "sensitive", "caution", "caption", "hashtags",
-                 "image_text", "mascot_pose", "image_idea"],
+                 "card_kicker", "card_headline", "card_detail", "mascot_mood"],
     "additionalProperties": False,
 }
 
@@ -156,9 +155,16 @@ def analysis_system(cfg: Config) -> str:
 - caption: 3-6 บรรทัด ในน้ำเสียงของ {m.name} บรรทัดแรกบอกว่าเกิดอะไร ปิดด้วยสิ่งที่คนอ่านควรรู้หรือควรทำ (ถ้ามี) ไม่ต้องใส่แฮชแท็กหรือเครดิตแหล่งข่าวในแคปชัน{sign_off}
 - hashtags: 3-5 อัน ขึ้นต้นด้วย #
 - headline: พาดหัวสั้น ไม่เกิน 70 ตัวอักษร
-- image_text: ข้อความบนการ์ดรูป ไม่เกิน 40 ตัวอักษร
-- mascot_pose: ท่าทางของ mascot ที่เข้ากับอารมณ์ข่าว
-- image_idea: ไอเดียภาพประกอบ 1 ประโยค ห้ามแนะนำให้ใช้รูปจากสำนักข่าว
+- ข่าวความสูญเสีย (มีผู้เสียชีวิต บาดเจ็บสาหัส ภัยพิบัติร้ายแรง): ไม่ต้องขึ้นต้นด้วยคำอุทานหรือคำทักทายสนุกๆ ใช้น้ำเสียงสงบและเห็นใจ
+
+ข้อความบนรูปโพสต์ (การ์ดข่าวของ {m.name}):
+- card_kicker: ประเภทข่าวสั้นๆ ไม่เกิน 22 ตัวอักษร เช่น "เตือนภัย · สภาพอากาศ", "ข่าวดี", "อัปเดตเศรษฐกิจ"
+- card_headline: พาดหัวบนรูป ไม่เกิน 32 ตัวอักษร อ่านแล้วรู้ใจความทันที เว้นวรรคระหว่างวลีแบบที่คนไทยเขียน ห้ามใส่คำอุทานหรือแฮชแท็ก
+- card_detail: 1-2 ประโยค ไม่เกิน 110 ตัวอักษร บอกว่าเกิดอะไร และทุกคนควรรู้หรือทำอะไรต่อ
+- mascot_mood: อารมณ์ของ {m.name} บนรูป
+  smile = ข่าวทั่วไป อัปเดตประจำวัน
+  excited = ข่าวดี ข่าวน่ายินดี เปิดตัวใหม่
+  serious = ประกาศสำคัญ เตือนภัย ข่าวร้าย ข่าวความสูญเสีย
 
 {URGENCY_RUBRIC}
 
@@ -248,8 +254,13 @@ class Analyst:
                           system=analysis_system(self.cfg), payload=payload,
                           schema=ANALYSIS_SCHEMA, max_tokens=16000)
         data["urgency"] = max(0, min(100, int(data.get("urgency", event.urgency))))
-        pose = str(data.get("mascot_pose", "serious")).lower()
-        data["mascot_pose"] = pose if pose in POSES else "serious"
+        mood = str(data.get("mascot_mood", "smile")).lower()
+        if mood not in MOODS:
+            mood = "smile"
+        # Never a cheerful mascot on a disaster, crime or otherwise sensitive story.
+        if data.get("sensitive") or event.sensitive or event.category in SERIOUS_CATEGORIES:
+            mood = "serious"
+        data["mascot_mood"] = mood
         data["hashtags"] = [h if h.startswith("#") else f"#{h}"
                             for h in (str(x).strip() for x in data.get("hashtags", [])) if h]
         return data

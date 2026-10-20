@@ -36,6 +36,12 @@ def _notifier(dry_run: bool):
     return LineNotifier(require_env("LINE_CHANNEL_ACCESS_TOKEN"), require_env("LINE_USER_ID"))
 
 
+def _images(cfg):
+    from .imagehost import make_image_host
+
+    return make_image_host(cfg.card_branch) if cfg.card_enabled else None
+
+
 def cmd_run(args) -> int:
     from .ai import make_analyst
     from .pipeline import run_once
@@ -46,14 +52,15 @@ def cmd_run(args) -> int:
     state = State.load(cfg.state_path)
     analyst = make_analyst(cfg)
     now = utcnow()
-    report = run_once(cfg, state, analyst, notifier, now)
+    report = run_once(cfg, state, analyst, notifier, now, images=_images(cfg))
     state.save()
     u = analyst.usage
     summary = (report.summary() + f"\nAI ({cfg.ai_provider}): {u['calls']} ครั้ง, "
                f"input {u['input_tokens']:,} / output {u['output_tokens']:,} tokens")
     print(summary)
     # A broken feed is only a warning; failing to reach the AI or LINE is an error.
-    annotate("error" if report.errors else "notice", summary)
+    level = "error" if report.errors else "warning" if report.warnings else "notice"
+    annotate(level, summary)
     return 1 if report.errors else 0
 
 
@@ -65,7 +72,7 @@ def cmd_demo(args) -> int:
     require_env(cfg.api_key_env)
     notifier = _notifier(args.dry_run)
     analyst = make_analyst(cfg)
-    result = run_demo(cfg, analyst, notifier, utcnow())
+    result = run_demo(cfg, analyst, notifier, utcnow(), images=_images(cfg))
     if not result.sent:
         msg = f"ส่งตัวอย่างไม่ได้: {result.message}"
         print(msg)
@@ -76,8 +83,12 @@ def cmd_demo(args) -> int:
            f"คะแนน {result.urgency} · แหล่ง: {', '.join(result.sources)} "
            f"· เลือกจากข่าว {result.candidates} รายการ\n"
            f"AI ({cfg.ai_provider}): {u['calls']} ครั้ง")
+    if result.image_url:
+        msg += f"\nรูปโพสต์: {result.image_url}"
+    for w in result.warnings:
+        msg += f"\nคำเตือน: {w}"
     print(msg)
-    annotate("notice", msg)
+    annotate("warning" if result.warnings else "notice", msg)
     return 0
 
 
@@ -100,14 +111,25 @@ def cmd_test_line(args) -> int:
         "affected": "ผู้ใช้รถใช้ถนนในเขตที่น้ำท่วมขัง (ตัวอย่าง)",
         "missing_info": ["ระยะเวลาที่น้ำจะลด"],
         "urgency": 78, "sensitive": False, "caution": "",
-        "caption": "ถ้าเห็นข้อความนี้ แปลว่าระบบส่งข่าวเข้า LINE ได้แล้ว 🎉\n"
+        "caption": "ปิ๊ง! ถ้าเห็นข้อความนี้ แปลว่าระบบส่งข่าวเข้า LINE ได้แล้ว\n"
                    "ข้อความนี้คือแคปชันที่กดค้างเพื่อคัดลอกไปโพสต์ได้เลย",
-        "hashtags": ["#ทดสอบระบบ"], "image_text": "ทดสอบระบบ",
-        "mascot_pose": "happy", "image_idea": "-",
+        "hashtags": ["#ทดสอบระบบ"],
+        "card_kicker": "ทดสอบระบบ", "card_headline": "ระบบส่งข่าวเข้า LINE ได้แล้ว",
+        "card_detail": "นี่คือรูปโพสต์ตัวอย่างจากน้องปิ๊ง ข่าวจริงจะใช้หน้าตาแบบนี้",
+        "mascot_mood": "excited",
     }
+    from .pipeline import RunReport, make_post_image
+
+    cfg = load_config()
+    report = RunReport()
+    image = make_post_image(cfg, _images(cfg), ev, analysis, now, urgent=False, report=report)
     notifier = _notifier(args.dry_run)
-    notifier.push(build_alert_messages(ev, analysis, now))
-    print("ส่งข้อความทดสอบแล้ว ลองเปิด LINE ดูได้เลย" if not args.dry_run else "")
+    notifier.push(build_alert_messages(ev, analysis, now, cfg.mascot.name, image=image))
+    msg = "ส่งข้อความทดสอบแล้ว" + (f" พร้อมรูป {image[0]}" if image else " (ไม่มีรูป)")
+    for w in report.warnings:
+        msg += f"\nคำเตือน: {w}"
+    print(msg)
+    annotate("warning" if report.warnings else "notice", msg)
     return 0
 
 

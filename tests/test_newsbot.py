@@ -94,8 +94,10 @@ class FakeAnalyst:
             "affected": "ชาวบ้านริมน้ำ", "missing_info": ["จำนวนผู้ได้รับผลกระทบ"],
             "urgency": event.urgency, "sensitive": True, "caution": "",
             "caption": "น้องทดสอบรายงาน: น้ำท่วมฉับพลันที่ จ.ทดสอบ ขอให้ทุกคนปลอดภัย",
-            "hashtags": ["#น้ำท่วม", "#จังหวัดทดสอบ"], "image_text": "น้ำท่วมฉับพลัน",
-            "mascot_pose": "alert", "image_idea": "การ์ดพื้นหลังสีส้ม",
+            "hashtags": ["#น้ำท่วม", "#จังหวัดทดสอบ"],
+            "card_kicker": "เตือนภัย · สภาพอากาศ", "card_headline": "น้ำท่วมฉับพลัน จ.ทดสอบ",
+            "card_detail": "ฝนตกหนักทำน้ำป่าไหลเข้าหลายหมู่บ้าน ทุกคนในพื้นที่ติดตามประกาศอำเภอ",
+            "mascot_mood": "serious",
         }
 
 
@@ -447,7 +449,7 @@ class GeminiRequestTests(unittest.TestCase):
         ev.add_items(feeds_round1(now)[SRC_A.name][:1])
         out = self._analyst(handler).analyze(ev, now)
         self.assertIn("models/gemini-3.8-flash:generateContent", seen[0])
-        self.assertEqual(out["mascot_pose"], "alert")
+        self.assertEqual(out["mascot_mood"], "serious")     # disaster story: never cheerful
 
     def test_thinking_level_rejected_falls_back(self):
         calls = []
@@ -517,6 +519,133 @@ class DemoTests(unittest.TestCase):
         res = run_demo(make_config(Path(tempfile.mkdtemp())), FakeAnalyst(),
                        ConsoleNotifier(echo=False), bkk(2026, 10, 21, 3), fetcher=lambda c: {})
         self.assertFalse(res.sent)
+
+
+class FakeImageHost:
+    note = ""
+
+    def __init__(self):
+        self.files = {}
+
+    def upload(self, path, data):
+        self.files[path] = data
+        return f"https://img.example.com/{path}"
+
+
+class PostImageTests(unittest.TestCase):
+    def test_alert_carries_post_image(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        host, line = FakeImageHost(), ConsoleNotifier(echo=False)
+        rep = run_once(cfg, State(cfg.state_path), FakeAnalyst(), line, now,
+                       fetcher=lambda c: feeds_round1(now), images=host)
+        self.assertEqual(rep.cards_made, 1)
+        flex, image, caption = line.batches[0]
+        self.assertEqual(image["type"], "image")
+        self.assertTrue(image["originalContentUrl"].endswith(".png"))
+        self.assertTrue(image["previewImageUrl"].endswith("-s.jpg"))
+        self.assertEqual(caption["type"], "text")
+        png = next(v for k, v in host.files.items() if k.endswith(".png"))
+        jpg = next(v for k, v in host.files.items() if k.endswith(".jpg"))
+        self.assertLess(len(png), 10_000_000)          # LINE limits
+        self.assertLess(len(jpg), 1_000_000)
+
+    def test_broken_image_never_blocks_alert(self):
+        class Broken(FakeImageHost):
+            def upload(self, path, data):
+                raise RuntimeError("GitHub down")
+
+        now = bkk(2026, 10, 21, 14, 5)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        line = ConsoleNotifier(echo=False)
+        rep = run_once(cfg, State(cfg.state_path), FakeAnalyst(), line, now,
+                       fetcher=lambda c: feeds_round1(now), images=Broken())
+        self.assertEqual(len(rep.alerts_sent), 1)
+        self.assertEqual(len(line.batches[0]), 2)        # flex + caption, no image
+        self.assertTrue(any("GitHub down" in w for w in rep.warnings))
+        self.assertFalse(rep.errors)
+
+    def test_card_renders_long_and_short_text(self):
+        from newsbot.card import CardText, card_bytes, render_card
+
+        for size in ((1080, 1080), (1080, 1350)):
+            for head in ("ใต้ฝนหนัก 21–25 ต.ค.",
+                         "สมาคมโรงแรมชี้ นักท่องเที่ยวภูเก็ต-กระบี่ชะลอตัวก่อนไฮซีซั่น "
+                         "เพราะเที่ยวบินตรงลดลงมากกว่าที่คาด ผู้ประกอบการกังวลรายได้ทั้งปี"):
+                img = render_card(CardText("เศรษฐกิจ", head, "รายละเอียด " * 30, "21 ต.ค. 2569",
+                                           "smile"), size)
+                self.assertEqual(img.size, size)
+                full, prev = card_bytes(img)
+                self.assertTrue(full.startswith(b"\x89PNG"))
+                self.assertTrue(prev.startswith(b"\xff\xd8"))
+
+    def test_headline_breaks_between_phrases(self):
+        from newsbot.card import font, wrap_balanced
+
+        f = font("head", 80)
+        lines = wrap_balanced(f, "ใต้ฝนหนักถึงหนักมาก 21–25 ต.ค.", lambda i: 620, 3, ("phrase",))
+        if lines:  # at 80px the first phrase may not fit; then no phrase layout exists
+            self.assertNotIn("หนัก\nมาก", "\n".join(lines))
+        lines = wrap_balanced(font("head", 64), "ใต้ฝนหนักถึงหนักมาก 21–25 ต.ค.",
+                              lambda i: 620, 3, ("phrase",))
+        self.assertEqual(lines, ["ใต้ฝนหนักถึงหนักมาก", "21–25 ต.ค."])
+
+    def test_mood_mapping(self):
+        from newsbot.card import card_text_from
+
+        now = bkk(2026, 10, 21, 14, 5)
+        ev = State(Path(tempfile.mkdtemp()) / "s.json").new_event("x", "economy", now)
+        t = card_text_from({"card_headline": "h", "mascot_mood": "EXCITED"}, ev, now, False)
+        self.assertEqual(t.mood, "excited")
+        self.assertEqual(card_text_from({"mascot_mood": "party"}, ev, now, False).mood, "smile")
+
+
+class GitHubImageHostTests(unittest.TestCase):
+    def _host(self, branch_exists: bool, private: bool = False):
+        from newsbot.imagehost import GitHubImageHost
+
+        calls = []
+
+        class Resp:
+            def __init__(self, code, data=None):
+                self.status_code, self._data, self.text = code, data or {}, ""
+
+            def json(self):
+                return self._data
+
+        class Session:
+            headers = {}
+
+            def request(self, method, url, timeout=None, json=None):
+                calls.append((method, url, json))
+                if url == "/repos/o/r".join(["https://api.github.com", ""]):
+                    return Resp(200, {"private": private, "default_branch": "main"})
+                if url.endswith("/git/ref/heads/cards"):
+                    return Resp(200 if branch_exists else 404, {"object": {"sha": "c1"}})
+                if url.endswith("/git/ref/heads/main"):
+                    return Resp(200, {"object": {"sha": "abc"}})
+                return Resp(201, {})
+
+        return GitHubImageHost("o/r", "t", session=Session()), calls
+
+    def test_creates_branch_once_and_returns_raw_url(self):
+        host, calls = self._host(branch_exists=False)
+        url = host.upload("cards/2026/10/21/1405-e1.png", b"png")
+        host.upload("cards/2026/10/21/1405-e1-s.jpg", b"jpg")
+        self.assertEqual(url, "https://raw.githubusercontent.com/o/r/cards/cards/2026/10/21/1405-e1.png")
+        posts = [c for c in calls if c[0] == "POST"]
+        self.assertEqual(posts[0][2], {"ref": "refs/heads/cards", "sha": "abc"})
+        self.assertEqual(len(posts), 1)
+        puts = [c for c in calls if c[0] == "PUT"]
+        self.assertEqual(puts[0][2]["branch"], "cards")
+        self.assertEqual(puts[0][2]["content"], "cG5n")   # base64 of b"png"
+
+    def test_private_repo_is_reported(self):
+        from newsbot.imagehost import ImageHostError
+
+        host, _ = self._host(branch_exists=True, private=True)
+        with self.assertRaises(ImageHostError):
+            host.upload("x.png", b"png")
 
 
 class ConfigTests(unittest.TestCase):

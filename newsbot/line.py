@@ -8,7 +8,7 @@ from datetime import datetime
 
 import requests
 
-from .ai import CATEGORIES, POSE_LABELS
+from .ai import CATEGORIES
 from .state import Event
 from .timeutil import ago, thai_clock
 
@@ -60,8 +60,12 @@ def urgency_color(score: int) -> str:
 
 # ---------------------------------------------------------------- alert
 def build_alert_messages(event: Event, analysis: dict, now: datetime,
-                         mascot_name: str = "", label: str = "ข่าวด่วน") -> list[dict]:
-    """A Flex card with the analysis + a plain-text message with the caption ready to copy."""
+                         mascot_name: str = "", label: str = "ข่าวด่วน",
+                         image: tuple[str, str] | None = None) -> list[dict]:
+    """A Flex card with the analysis, the post image (if any), and the caption ready to copy.
+
+    ``image`` is (full-size URL, preview URL), both public HTTPS.
+    """
     score = int(analysis.get("urgency", event.urgency))
     category = CATEGORIES.get(event.category, "อื่นๆ")
     first = event.earliest
@@ -83,8 +87,6 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
     missing = [m for m in analysis.get("missing_info", []) if str(m).strip()]
     if missing:
         body.append(_row("ยังไม่รู้", " · ".join(missing[:4])))
-    body.append(_row("รูปการ์ด", f"\"{analysis.get('image_text', '')}\" · "
-                                 f"ท่า{POSE_LABELS.get(analysis.get('mascot_pose', ''), 'จริงจัง')}"))
 
     warnings = []
     if analysis.get("caution"):
@@ -134,7 +136,12 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
 
     alt = _cut(f"{label} ({score}): {headline}", 400)
     caption_msg = {"type": "text", "text": _cut(build_post_text(event, analysis), 4900)}
-    return [{"type": "flex", "altText": alt, "contents": bubble}, caption_msg]
+    messages = [{"type": "flex", "altText": alt, "contents": bubble}]
+    if image and _https(image[0]) and _https(image[1]):
+        messages.append({"type": "image", "originalContentUrl": image[0],
+                         "previewImageUrl": image[1]})
+    messages.append(caption_msg)
+    return messages
 
 
 def build_post_text(event: Event, analysis: dict) -> str:

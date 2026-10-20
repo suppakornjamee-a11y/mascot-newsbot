@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
 from .ai import Analyst
-from .config import Config
+from .config import TZ, Config
 from .fetch import Item, fetch_all
 from .line import build_alert_messages, build_digest_message
 from .state import Event, State
@@ -25,6 +25,12 @@ class Notifier(Protocol):
     def push(self, messages: list[dict]) -> None: ...
 
 
+class ImageHost(Protocol):
+    note: str
+
+    def upload(self, path: str, data: bytes) -> str | None: ...
+
+
 @dataclass
 class RunReport:
     fetched: int = 0
@@ -35,7 +41,9 @@ class RunReport:
     alerts_sent: list[str] = field(default_factory=list)
     held_quiet: int = 0
     digest_sent: int = 0
+    cards_made: int = 0
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [
@@ -45,6 +53,10 @@ class RunReport:
             + (f" (พักไว้ช่วงไม่รบกวน {self.held_quiet})" if self.held_quiet else ""),
             f"สรุปรอบวัน {self.digest_sent} เรื่อง",
         ]
+        if self.cards_made:
+            lines.append(f"สร้างรูปโพสต์ {self.cards_made} รูป")
+        for w in self.warnings:
+            lines.append(f"คำเตือน: {w}")
         for name, err in self.feed_errors.items():
             lines.append(f"ฟีดมีปัญหา: {name} — {err}")
         for err in self.errors:
@@ -127,9 +139,36 @@ def triage_items(state: State, analyst: Analyst, items: list[Item], now: datetim
             state.mark_seen(it.id, now)
 
 
+# ---------------------------------------------------------------- post image
+def make_post_image(cfg: Config, images: ImageHost | None, event: Event, analysis: dict,
+                    now: datetime, urgent: bool, report: RunReport) -> tuple[str, str] | None:
+    """Draw the post image and upload it. Never stops an alert: returns None on failure."""
+    if images is None or not cfg.card_enabled:
+        return None
+    try:
+        from .card import card_bytes, card_text_from, render_card
+
+        img = render_card(card_text_from(analysis, event, now, urgent), cfg.card_size,
+                          cfg.card_page_name)
+        full, preview = card_bytes(img)
+        local = now.astimezone(TZ)
+        stem = f"cards/{local:%Y/%m/%d}/{local:%H%M}-{event.id}"
+        url = images.upload(f"{stem}.png", full)
+        preview_url = images.upload(f"{stem}-s.jpg", preview)
+        report.cards_made += 1
+        if url and preview_url:
+            return url, preview_url
+        if getattr(images, "note", ""):
+            report.warnings.append(images.note)
+    except Exception as exc:
+        report.warnings.append(f"สร้างรูปโพสต์ไม่สำเร็จ: {exc}")
+        log.exception("card failed")
+    return None
+
+
 # ---------------------------------------------------------------- step: alerts
 def send_alerts(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
-                now: datetime, report: RunReport) -> None:
+                now: datetime, report: RunReport, images: ImageHost | None = None) -> None:
     max_age = timedelta(hours=cfg.alert_max_age_hours)
     quiet = in_hour_window(now, cfg.quiet_hours)
     candidates = sorted(
@@ -170,8 +209,9 @@ def send_alerts(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
             report.held_quiet += 1
             continue
 
+        image = make_post_image(cfg, images, ev, analysis, now, urgent=True, report=report)
         try:
-            notifier.push(build_alert_messages(ev, analysis, now, cfg.mascot.name))
+            notifier.push(build_alert_messages(ev, analysis, now, cfg.mascot.name, image=image))
         except Exception as exc:
             report.errors.append(f"ส่ง LINE ไม่สำเร็จ: {exc}")
             log.exception("line push failed")
@@ -211,13 +251,14 @@ def send_digest(cfg: Config, state: State, notifier: Notifier, now: datetime,
 
 # ---------------------------------------------------------------- run
 def run_once(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
-             now: datetime, fetcher: Fetcher = default_fetcher) -> RunReport:
+             now: datetime, fetcher: Fetcher = default_fetcher,
+             images: ImageHost | None = None) -> RunReport:
     report = RunReport()
     results = fetcher(cfg)
     items = collect_new_items(cfg, state, results, now, report)
     if items:
         triage_items(state, analyst, items, now, report)
-    send_alerts(cfg, state, analyst, notifier, now, report)
+    send_alerts(cfg, state, analyst, notifier, now, report, images)
     send_digest(cfg, state, notifier, now, report)
     state.prune(now)
     return report
@@ -235,10 +276,13 @@ class DemoResult:
     sources: list[str] = field(default_factory=list)
     candidates: int = 0
     message: str = ""
+    image_url: str = ""
+    warnings: list[str] = field(default_factory=list)
 
 
 def run_demo(cfg: Config, analyst: Analyst, notifier: Notifier, now: datetime,
-             fetcher: Fetcher = default_fetcher, hours: float = 24) -> DemoResult:
+             fetcher: Fetcher = default_fetcher, hours: float = 24,
+             images: ImageHost | None = None) -> DemoResult:
     """Pick the most urgent story of the last ``hours`` and send it as a sample alert.
 
     Ignores the alert threshold and quiet hours, and works on a throwaway state so
@@ -262,7 +306,11 @@ def run_demo(cfg: Config, analyst: Analyst, notifier: Notifier, now: datetime,
         return DemoResult(False, message="ไม่มีข่าวที่เหมาะจะเป็นตัวอย่าง")
     best = max(events, key=lambda e: (e.urgency, len(e.source_names)))
     analysis = analyst.analyze(best, now)
-    notifier.push(build_alert_messages(best, analysis, now, cfg.mascot.name, label="ตัวอย่าง"))
+    image = make_post_image(cfg, images, best, analysis, now,
+                            urgent=analysis.get("urgency", 0) >= cfg.alert_threshold, report=report)
+    notifier.push(build_alert_messages(best, analysis, now, cfg.mascot.name, label="ตัวอย่าง",
+                                       image=image))
     return DemoResult(True, headline=analysis.get("headline") or best.headline,
                       urgency=int(analysis.get("urgency", best.urgency)),
-                      sources=best.source_names, candidates=len(items))
+                      sources=best.source_names, candidates=len(items),
+                      image_url=image[0] if image else "", warnings=report.warnings)

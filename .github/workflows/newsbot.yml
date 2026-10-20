@@ -11,6 +11,9 @@ on:
         options: [run, demo, test-line, check-sources]
         default: run
 
+permissions:
+  contents: write              # ให้ระบบอัปโหลดรูปโพสต์ไปที่ branch cards
+
 concurrency:
   group: newsbot                # ห้ามรันซ้อนกัน
   cancel-in-progress: false
@@ -43,6 +46,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMAND: ${{ inputs.command || 'run' }}
         run: python -m newsbot "$COMMAND"
 

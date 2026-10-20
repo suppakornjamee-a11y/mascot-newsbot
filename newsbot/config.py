@@ -49,6 +49,10 @@ class Config:
     analysis_model: str = "gemini-3.8-flash"
     analysis_effort: str | None = "medium"
     state_path: Path = ROOT / "data" / "state.json"
+    card_enabled: bool = True
+    card_size: tuple[int, int] = (1080, 1080)
+    card_page_name: str = ""
+    card_branch: str = "cards"
 
     @property
     def api_key_env(self) -> str:
@@ -84,6 +88,7 @@ def load_config(path: Path | None = None) -> Config:
     digest = raw.get("digest") or {}
     fetch = raw.get("fetch") or {}
     ai = raw.get("ai") or {}
+    card = raw.get("card") or {}
 
     sources = []
     for s in raw.get("sources") or []:
@@ -125,6 +130,10 @@ def load_config(path: Path | None = None) -> Config:
         triage_effort=p.get("triage_level") or None,
         analysis_model=str(p["analysis_model"]),
         analysis_effort=p.get("analysis_level") or None,
+        card_enabled=bool(card.get("enabled", True)),
+        card_size=tuple(int(x) for x in (card.get("size") or [1080, 1080]))[:2],
+        card_page_name=str(card.get("page_name", "") or ""),
+        card_branch=str(card.get("branch", "cards") or "cards"),
     )
 
 
