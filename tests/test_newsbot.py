@@ -1,0 +1,377 @@
+"""Offline tests: synthetic feeds, a fake AI and a fake LINE. Run: python -m unittest -v"""
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import httpx2 as httpx
+import anthropic
+
+from newsbot.ai import Analyst, TriageGroup
+from newsbot.config import TZ, Config, Mascot, Source
+from newsbot.fetch import parse_feed
+from newsbot.line import ConsoleNotifier, build_alert_messages, build_digest_message
+from newsbot.pipeline import run_once
+from newsbot.state import State
+from newsbot.timeutil import parse_date
+
+
+def bkk(y, mo, d, h, mi=0) -> datetime:
+    return datetime(y, mo, d, h, mi, tzinfo=TZ).astimezone(timezone.utc)
+
+
+def rfc(dt: datetime) -> str:
+    return dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+
+def rss(items: list[dict]) -> bytes:
+    parts = []
+    for it in items:
+        date = f"<pubDate>{it['date']}</pubDate>" if it.get("date") else ""
+        link = f"<link>{it['link']}</link>" if it.get("link") else ""
+        parts.append(f"<item><title>{it['title']}</title>{link}{date}"
+                     f"<description><![CDATA[{it.get('desc', '')}]]></description></item>")
+    return ("<?xml version='1.0' encoding='UTF-8'?><rss version='2.0' "
+            "xmlns:media='http://search.yahoo.com/mrss/'><channel><title>t</title>"
+            "<link>https://example.com</link><description>d</description>"
+            + "".join(parts) + "</channel></rss>").encode("utf-8")
+
+
+SRC_A = Source("สำนักข่าว A", "https://a.example.com/feed")
+SRC_B = Source("สำนักข่าว B", "https://b.example.com/feed")
+SRC_TMD = Source("กรมอุตุฯ", "https://tmd.example.go.th/xml", official=True,
+                 link="https://tmd.example.go.th/quake")
+
+
+def make_config(tmp: Path) -> Config:
+    return Config(mascot=Mascot(name="น้องทดสอบ"), sources=[SRC_A, SRC_B, SRC_TMD],
+                  state_path=tmp / "state.json", quiet_hours=[0, 6])
+
+
+class FakeAnalyst:
+    """Groups by keyword and scores deterministically, like a tiny rule-based Claude."""
+
+    def __init__(self, flood_score=85):
+        self.flood_score = flood_score
+        self.triage_calls = 0
+        self.analyze_calls = 0
+        self.usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+
+    def triage(self, items, recent, now):
+        self.triage_calls += 1
+        flood_existing = next((e.id for e in recent if "น้ำท่วม" in e.headline), None)
+        flood, groups = [], []
+        for i, it in enumerate(items):
+            if "น้ำ" in it.title or "ฝน" in it.title:
+                flood.append(i)
+            elif "รางวัล" in it.title:
+                groups.append(TriageGroup([i], None, it.title, "business", 10, False, True))
+            elif "เตือน" in it.title:
+                groups.append(TriageGroup([i], None, it.title, "disaster", 60, False, False))
+            else:
+                groups.append(TriageGroup([i], None, it.title, "society", 45, False, False))
+        if flood:
+            groups.append(TriageGroup(flood, flood_existing, "น้ำท่วมฉับพลัน จ.ทดสอบ",
+                                      "disaster", self.flood_score, True, False))
+        return groups
+
+    def analyze(self, event, now):
+        self.analyze_calls += 1
+        return {
+            "headline": event.headline, "what_happened": "น้ำท่วมฉับพลันหลายหมู่บ้าน",
+            "cause": "ฝนตกหนักต่อเนื่อง", "when": "21 ต.ค. ช่วงบ่าย", "where": "อ.เมือง จ.ทดสอบ",
+            "affected": "ชาวบ้านริมน้ำ", "missing_info": ["จำนวนผู้ได้รับผลกระทบ"],
+            "urgency": event.urgency, "sensitive": True, "caution": "",
+            "caption": "น้องทดสอบรายงาน: น้ำท่วมฉับพลันที่ จ.ทดสอบ ขอให้ทุกคนปลอดภัย",
+            "hashtags": ["#น้ำท่วม", "#จังหวัดทดสอบ"], "image_text": "น้ำท่วมฉับพลัน",
+            "mascot_pose": "alert", "image_idea": "การ์ดพื้นหลังสีส้ม",
+        }
+
+
+def feeds_round1(now: datetime) -> dict:
+    a = rss([
+        {"title": "น้ำท่วมฉับพลัน อ.เมือง จ.ทดสอบ ชาวบ้านอพยพ", "link": "/news/1",
+         "date": rfc(now - timedelta(minutes=15)), "desc": "<p>ฝนตกหนัก <b>น้ำป่า</b></p>"},
+        {"title": "บริษัทตัวอย่างคว้ารางวัลองค์กรดีเด่น", "link": "https://a.example.com/news/2",
+         "date": rfc(now - timedelta(minutes=30))},
+    ])
+    b = rss([
+        {"title": "ฝนถล่มหนัก น้ำป่าทะลักเข้าเมือง จ.ทดสอบ", "link": "https://b.example.com/x/9",
+         "date": rfc(now - timedelta(minutes=10))},
+        {"title": "ข่าวเก่าเมื่อสองวันก่อน", "link": "https://b.example.com/old",
+         "date": rfc(now - timedelta(days=2))},
+    ])
+    tmd = rss([{"title": "แผ่นดินไหว ประเทศเพื่อนบ้าน ขนาด 3.1", "desc": "รายงานเก่า"}])
+    return {SRC_A.name: parse_feed(a, SRC_A), SRC_B.name: parse_feed(b, SRC_B),
+            SRC_TMD.name: parse_feed(tmd, SRC_TMD)}
+
+
+class DateTests(unittest.TestCase):
+    def test_formats(self):
+        self.assertEqual(parse_date("Tue, 20 Oct 2026 02:10:50 +0000"),
+                         datetime(2026, 10, 20, 2, 10, 50, tzinfo=timezone.utc))
+        # TMD: Buddhist-era year, Thai local time
+        self.assertEqual(parse_date("15/4/2568 5:17:23"),
+                         datetime(2025, 4, 14, 22, 17, 23, tzinfo=timezone.utc))
+        self.assertEqual(parse_date("2026-10-20T19:21:05.328Z").hour, 19)
+        self.assertIsNone(parse_date("not a date"))
+        self.assertIsNone(parse_date(None))
+
+
+class FeedTests(unittest.TestCase):
+    def test_parse(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        items = feeds_round1(now)[SRC_A.name]
+        self.assertEqual(items[0].link, "https://a.example.com/news/1")  # relative link joined
+        self.assertEqual(items[0].summary, "ฝนตกหนัก น้ำป่า")             # html stripped
+        self.assertEqual(items[0].published, now - timedelta(minutes=15))
+        tmd = feeds_round1(now)[SRC_TMD.name][0]
+        self.assertEqual(tmd.link, "https://tmd.example.go.th/quake")       # fallback link
+        self.assertIsNone(tmd.published)
+
+    def test_truncated_feed_still_parses(self):
+        data = rss([{"title": "ข่าวหนึ่ง", "link": "https://a.example.com/1"},
+                    {"title": "ข่าวสอง", "link": "https://a.example.com/2"}])
+        items = parse_feed(data[:-40], SRC_A)  # cut off the closing tags
+        self.assertGreaterEqual(len(items), 1)
+
+
+class PipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg = make_config(self.tmp)
+
+    def test_alert_dedupe_and_follow_up(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        state, ai, line = State(self.cfg.state_path), FakeAnalyst(), ConsoleNotifier(echo=False)
+        rep = run_once(self.cfg, state, ai, line, now, fetcher=lambda c: feeds_round1(now))
+
+        self.assertEqual(rep.new_items, 3)            # old item + undated TMD (first run) skipped
+        self.assertEqual(len(rep.alerts_sent), 1)     # flood only; PR never alerts
+        self.assertEqual(len(line.batches), 1)
+        flex, caption = line.batches[0]
+        self.assertEqual(flex["type"], "flex")
+        self.assertIn("ยืนยัน 2 แหล่ง", json.dumps(flex, ensure_ascii=False))
+        self.assertIn("#น้ำท่วม", caption["text"])
+        self.assertIn("ที่มา: สำนักข่าว A, สำนักข่าว B", caption["text"])
+        state.save()
+
+        # 30 min later, same feeds: nothing new, nothing sent
+        later = now + timedelta(minutes=30)
+        state = State.load(self.cfg.state_path)
+        rep = run_once(self.cfg, state, ai, line, later, fetcher=lambda c: feeds_round1(now))
+        self.assertEqual(rep.new_items, 0)
+        self.assertEqual(len(line.batches), 1)
+        self.assertEqual(ai.triage_calls, 1)
+
+        # a new article on the same flood joins the existing event, no second alert
+        extra = feeds_round1(now)
+        extra[SRC_B.name] += parse_feed(rss([{
+            "title": "ผู้ว่าฯ สั่งเปิดศูนย์พักพิง หลังน้ำท่วม จ.ทดสอบ",
+            "link": "https://b.example.com/x/10", "date": rfc(later)}]), SRC_B)
+        rep = run_once(self.cfg, state, ai, line, later, fetcher=lambda c: extra)
+        self.assertEqual(rep.new_items, 1)
+        self.assertEqual(rep.events_updated, 1)
+        self.assertEqual(len(line.batches), 1)
+        flood = [e for e in state.events.values() if "น้ำท่วม" in e.headline][0]
+        self.assertEqual(len(flood.items), 3)
+        self.assertEqual(flood.status, "notified")
+
+    def test_undated_items_after_bootstrap_are_new(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        state, ai, line = State(self.cfg.state_path), FakeAnalyst(), ConsoleNotifier(echo=False)
+        run_once(self.cfg, state, ai, line, now, fetcher=lambda c: feeds_round1(now))
+        feeds = feeds_round1(now)
+        feeds[SRC_TMD.name] += parse_feed(rss([{"title": "ประกาศเตือนพายุฝนฟ้าคะนอง",
+                                                "desc": "ฉบับใหม่"}]), SRC_TMD)
+        rep = run_once(self.cfg, state, ai, line, now + timedelta(minutes=30),
+                       fetcher=lambda c: feeds)
+        self.assertEqual(rep.new_items, 1)
+
+    def test_digest_once_per_slot(self):
+        morning = bkk(2026, 10, 21, 11, 35)
+        state, ai, line = State(self.cfg.state_path), FakeAnalyst(), ConsoleNotifier(echo=False)
+        feeds = {SRC_A.name: parse_feed(rss([
+            {"title": "ครม.เห็นชอบงบประมาณโครงการถนนสายใหม่", "link": "https://a.example.com/7",
+             "date": rfc(morning - timedelta(minutes=20))},
+            {"title": "ประกาศเตือนคลื่นลมแรงอ่าวไทย", "link": "https://a.example.com/8",
+             "date": rfc(morning - timedelta(minutes=5))},
+        ]), SRC_A)}
+        rep = run_once(self.cfg, state, ai, line, morning, fetcher=lambda c: feeds)
+        self.assertEqual(rep.digest_sent, 0)          # 11:35 is not a digest slot
+        self.assertEqual(len(line.batches), 0)        # 45 and 60 < alert threshold
+
+        noon = bkk(2026, 10, 21, 12, 5)
+        rep = run_once(self.cfg, state, ai, line, noon, fetcher=lambda c: feeds)
+        self.assertEqual(rep.digest_sent, 2)
+        digest = line.batches[0][0]
+        text = json.dumps(digest, ensure_ascii=False)
+        self.assertIn("สรุปข่าวรอบ 12:05", text)
+        self.assertLess(text.index("คลื่นลมแรง"), text.index("งบประมาณ"))  # highest score first
+
+        rep = run_once(self.cfg, state, ai, line, noon + timedelta(minutes=30),
+                       fetcher=lambda c: feeds)
+        self.assertEqual(rep.digest_sent, 0)
+        self.assertEqual(len(line.batches), 1)
+
+    def test_quiet_hours(self):
+        night = bkk(2026, 10, 21, 2, 0)
+        line = ConsoleNotifier(echo=False)
+        state = State(self.cfg.state_path)
+        rep = run_once(self.cfg, state, FakeAnalyst(85), line, night,
+                       fetcher=lambda c: feeds_round1(night))
+        self.assertEqual(rep.held_quiet, 1)
+        self.assertEqual(len(line.batches), 0)
+
+        # the held story goes out on the first run after quiet hours end
+        rep = run_once(self.cfg, state, FakeAnalyst(85), line, bkk(2026, 10, 21, 6, 5),
+                       fetcher=lambda c: {})
+        self.assertEqual(len(rep.alerts_sent), 1)
+
+        state2 = State(self.tmp / "s2.json")
+        rep = run_once(self.cfg, state2, FakeAnalyst(95), line, night,
+                       fetcher=lambda c: feeds_round1(night))
+        self.assertEqual(len(rep.alerts_sent), 1)     # 95 >= quiet_override
+
+    def test_failed_ai_retries_next_run(self):
+        class Broken(FakeAnalyst):
+            def triage(self, *a):
+                raise RuntimeError("API down")
+
+        now = bkk(2026, 10, 21, 14, 5)
+        state, line = State(self.cfg.state_path), ConsoleNotifier(echo=False)
+        rep = run_once(self.cfg, state, Broken(), line, now, fetcher=lambda c: feeds_round1(now))
+        self.assertTrue(rep.errors)
+        rep = run_once(self.cfg, state, FakeAnalyst(), line, now + timedelta(minutes=30),
+                       fetcher=lambda c: feeds_round1(now))
+        self.assertEqual(rep.new_items, 3)            # items were not lost
+        self.assertEqual(len(rep.alerts_sent), 1)
+
+    def test_state_roundtrip(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        state = State(self.cfg.state_path)
+        run_once(self.cfg, state, FakeAnalyst(), ConsoleNotifier(echo=False), now,
+                 fetcher=lambda c: feeds_round1(now))
+        state.save()
+        again = State.load(self.cfg.state_path)
+        self.assertEqual(again.seen, state.seen)
+        self.assertEqual({e.id: e.to_dict() for e in again.events.values()},
+                         {e.id: e.to_dict() for e in state.events.values()})
+
+
+class LineMessageTests(unittest.TestCase):
+    def test_flex_within_limits(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        state = State(Path(tempfile.mkdtemp()) / "s.json")
+        ai, line = FakeAnalyst(), ConsoleNotifier(echo=False)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        run_once(cfg, state, ai, line, now, fetcher=lambda c: feeds_round1(now))
+        msgs = line.batches[0]
+        flex = msgs[0]
+        self.assertLessEqual(len(flex["altText"]), 400)
+        self.assertLess(len(json.dumps(flex["contents"], ensure_ascii=False).encode()), 30_000)
+        buttons = flex["contents"]["footer"]["contents"]
+        self.assertEqual(len(buttons), 2)
+        for b in buttons:
+            self.assertLessEqual(len(b["action"]["label"]), 20)
+            self.assertTrue(b["action"]["uri"].startswith("https://"))
+        self.assertLessEqual(len(msgs[1]["text"]), 5000)
+
+        digest = build_digest_message(list(state.events.values()), now)
+        self.assertLessEqual(len(digest["altText"]), 400)
+
+        def walk(node):  # every text component must have non-empty text
+            if isinstance(node, dict):
+                if node.get("type") == "text":
+                    self.assertTrue(node["text"].strip())
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+        walk(flex)
+        walk(digest)
+
+
+class AnthropicRequestTests(unittest.TestCase):
+    """Checks the real SDK call shape against a mocked HTTP endpoint."""
+
+    def _client(self, handler):
+        return anthropic.Anthropic(api_key="test-key", max_retries=0,
+                                   http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    @staticmethod
+    def _message(payload: dict) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+            "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 120, "output_tokens": 40},
+        })
+
+    def test_triage_request_and_parse(self):
+        seen = []
+
+        def handler(request: httpx.Request):
+            seen.append(json.loads(request.content))
+            return self._message({"groups": [{
+                "item_indexes": [0], "existing_event_id": None, "headline": "ทดสอบ",
+                "category": "DISASTER", "urgency": 140, "sensitive": False, "promotional": False}]})
+
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        analyst = Analyst(cfg, client=self._client(handler))
+        now = bkk(2026, 10, 21, 14, 5)
+        items = feeds_round1(now)[SRC_A.name]
+        groups = analyst.triage(items, [], now)
+
+        body = seen[0]
+        self.assertEqual(body["model"], "claude-haiku-5-5")
+        self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
+        self.assertEqual(body["output_config"]["effort"], "low")
+        self.assertIn("น้ำท่วมฉับพลัน", body["messages"][0]["content"])
+        self.assertEqual(groups[0].category, "disaster")   # case-insensitive enum
+        self.assertEqual(groups[0].urgency, 100)           # clamped
+        self.assertEqual(analyst.usage["input_tokens"], 120)
+
+    def test_effort_rejected_falls_back(self):
+        calls = []
+
+        def handler(request: httpx.Request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if "effort" in body["output_config"]:
+                return httpx.Response(400, json={"type": "error", "error": {
+                    "type": "invalid_request_error", "message": "effort is not supported"}})
+            return self._message({"groups": []})
+
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        analyst = Analyst(cfg, client=self._client(handler))
+        self.assertEqual(analyst.triage([], [], bkk(2026, 10, 21, 14)), [])
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("effort", calls[1]["output_config"])
+
+    def test_analysis_schema_rules(self):
+        from newsbot.ai import ANALYSIS_SCHEMA, TRIAGE_SCHEMA
+
+        banned = {"minimum", "maximum", "minLength", "maxLength", "maxItems", "multipleOf"}
+
+        def check(node):
+            if isinstance(node, dict):
+                self.assertFalse(banned & node.keys())
+                if node.get("type") == "object":
+                    self.assertIs(node.get("additionalProperties"), False)
+                    self.assertEqual(set(node["required"]), set(node["properties"]))
+                for v in node.values():
+                    check(v)
+            elif isinstance(node, list):
+                for v in node:
+                    check(v)
+        check(TRIAGE_SCHEMA)
+        check(ANALYSIS_SCHEMA)
+
+
+if __name__ == "__main__":
+    unittest.main()

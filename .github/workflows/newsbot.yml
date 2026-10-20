@@ -1,0 +1,53 @@
+name: Mascot Newsbot
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"      # ทุก 30 นาที ตลอดวัน (ช่วงไม่รบกวนตั้งใน config.yaml)
+  workflow_dispatch:            # ปุ่ม "Run workflow" สำหรับกดรันเอง
+    inputs:
+      command:
+        description: "คำสั่ง: run = รันปกติ, test-line = ส่งข้อความทดสอบ, check-sources = ตรวจแหล่งข่าว"
+        type: choice
+        options: [run, test-line, check-sources]
+        default: run
+
+concurrency:
+  group: newsbot                # ห้ามรันซ้อนกัน
+  cancel-in-progress: false
+
+jobs:
+  newsbot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Restore state (ข่าวที่เคยเห็นแล้ว)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: newsbot-state-${{ github.run_id }}
+          restore-keys: newsbot-state-
+
+      - name: Run newsbot
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          COMMAND: ${{ inputs.command || 'run' }}
+        run: python -m newsbot "$COMMAND"
+
+      - name: Save state
+        if: always() && hashFiles('data/state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: newsbot-state-${{ github.run_id }}

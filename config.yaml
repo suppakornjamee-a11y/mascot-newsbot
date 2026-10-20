@@ -1,0 +1,71 @@
+# ============================================================
+#  ตั้งค่า Mascot Newsbot — แก้ไฟล์นี้ได้เลย ไม่ต้องแตะโค้ด
+# ============================================================
+
+# ---------- ตัว mascot (AI จะเขียนแคปชันด้วยบุคลิกนี้) ----------
+mascot:
+  name: "น้องข่าว"
+  personality: "เป็นมิตร ฉลาด พูดตรง ไม่ตื่นตูม อธิบายเรื่องยากให้เข้าใจง่าย"
+  voice: "ภาษาไทยแบบกันเอง แทนตัวเองว่า 'น้องข่าว' เรียกคนอ่านว่า 'ทุกคน' ใช้อีโมจิได้ไม่เกิน 2 ตัว"
+  sign_off: ""          # คำลงท้ายประจำตัว เช่น "ติดตามต่อกับน้องข่าวนะ" (เว้นว่างได้)
+
+# ---------- เกณฑ์การแจ้งเตือน ----------
+alerts:
+  threshold: 70             # คะแนนความด่วน (0-100) ตั้งแต่เท่านี้ขึ้นไป แจ้ง LINE ทันที
+  max_per_run: 3            # แจ้งด่วนได้สูงสุดกี่เรื่องต่อรอบ (กันข้อความท่วม)
+  max_age_hours: 6          # ข่าวที่ออกมานานกว่านี้ จะไม่แจ้งด่วน (ไปอยู่ในสรุปรอบวันแทน)
+  quiet_hours: [0, 6]       # ช่วงเวลาไม่รบกวน (เวลาไทย) ใส่ [] เพื่อปิด
+  quiet_override: 90        # ช่วงไม่รบกวน ยังแจ้งข่าวที่คะแนนตั้งแต่เท่านี้
+
+# ---------- สรุปข่าวรอบวัน (ข่าวที่ไม่ด่วนแต่น่าสนใจ) ----------
+digest:
+  hours: [8, 12, 18]        # ส่งสรุปกี่โมงบ้าง (เวลาไทย)
+  min_score: 35             # ข่าวคะแนนต่ำกว่านี้ไม่ใส่ในสรุป
+  max_items: 8              # สรุปละไม่เกินกี่เรื่อง
+
+# ---------- การอ่านข่าว ----------
+fetch:
+  max_item_age_hours: 6     # อ่านเฉพาะข่าวที่เผยแพร่ภายในกี่ชั่วโมงล่าสุด
+  timeout_seconds: 20
+
+# ---------- AI ----------
+ai:
+  triage_model: "claude-haiku-5-5"      # ตัวคัดกรอง/จัดกลุ่ม (ถูก เร็ว)
+  triage_effort: "low"
+  analysis_model: "claude-sonnet-5-5"   # ตัววิเคราะห์ละเอียด + เขียนแคปชัน
+  analysis_effort: "medium"
+
+# ---------- แหล่งข่าว (RSS) ----------
+# official: true = หน่วยงานรัฐ ใช้ยืนยันข้อเท็จจริงได้
+# enabled: false = ปิดไว้ (ลองเปิดได้ แล้วรัน check-sources ดูว่าใช้ได้ไหม)
+sources:
+  - name: มติชน
+    url: https://www.matichon.co.th/feed
+  - name: ประชาชาติธุรกิจ
+    url: https://www.prachachat.net/feed
+  - name: ข่าวสด
+    url: https://www.khaosod.co.th/feed
+  - name: ไทยโพสต์
+    url: https://www.thaipost.net/feed/
+  - name: Workpoint Today
+    url: https://workpointtoday.com/feed/
+  - name: The Reporters
+    url: https://www.thereporters.co/feed/
+  - name: Khaosod English
+    url: https://www.khaosodenglish.com/feed/
+  - name: กรมอุตุฯ แผ่นดินไหว
+    url: https://www.tmd.go.th/api/xml/earthquake-report
+    official: true
+    link: https://www.tmd.go.th/EarthQuake
+  - name: กรมอุตุฯ ประกาศเตือนภัย
+    url: https://www.tmd.go.th/api/xml/warning-news
+    official: true
+    link: https://www.tmd.go.th/warning-and-events/warning-storm
+
+  # ยังตรวจสอบไม่ผ่านตอนสร้างระบบ (เว็บอาจบล็อกบอท) ลองเปิดแล้วรัน check-sources
+  - name: THE STANDARD
+    url: https://thestandard.co/feed/
+    enabled: false
+  - name: Bangkok Post
+    url: https://www.bangkokpost.com/rss/data/topstories.xml
+    enabled: false

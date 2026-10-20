@@ -1,0 +1,119 @@
+"""Load config.yaml and secrets from the environment (or a local .env file)."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import yaml
+
+TZ = ZoneInfo("Asia/Bangkok")
+ROOT = Path(__file__).resolve().parent.parent
+
+
+@dataclass
+class Source:
+    name: str
+    url: str
+    enabled: bool = True
+    official: bool = False
+    link: str | None = None  # fallback link for feeds whose items have none
+
+
+@dataclass
+class Mascot:
+    name: str = "น้องข่าว"
+    personality: str = ""
+    voice: str = ""
+    sign_off: str = ""
+
+
+@dataclass
+class Config:
+    mascot: Mascot
+    sources: list[Source]
+    alert_threshold: int = 70
+    alert_max_per_run: int = 3
+    alert_max_age_hours: float = 6
+    quiet_hours: list[int] = field(default_factory=lambda: [0, 6])
+    quiet_override: int = 90
+    digest_hours: list[int] = field(default_factory=lambda: [8, 12, 18])
+    digest_min_score: int = 35
+    digest_max_items: int = 8
+    max_item_age_hours: float = 6
+    fetch_timeout: float = 20
+    triage_model: str = "claude-haiku-5-5"
+    triage_effort: str | None = "low"
+    analysis_model: str = "claude-sonnet-5-5"
+    analysis_effort: str | None = "medium"
+    state_path: Path = ROOT / "data" / "state.json"
+
+
+def load_dotenv(path: Path) -> None:
+    """Minimal .env reader: KEY=value lines; existing env vars win."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key.strip(), value)
+
+
+def load_config(path: Path | None = None) -> Config:
+    path = path or ROOT / "config.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    m = raw.get("mascot") or {}
+    alerts = raw.get("alerts") or {}
+    digest = raw.get("digest") or {}
+    fetch = raw.get("fetch") or {}
+    ai = raw.get("ai") or {}
+
+    sources = []
+    for s in raw.get("sources") or []:
+        sources.append(
+            Source(
+                name=str(s["name"]),
+                url=str(s["url"]),
+                enabled=bool(s.get("enabled", True)),
+                official=bool(s.get("official", False)),
+                link=s.get("link"),
+            )
+        )
+
+    defaults = Config(mascot=Mascot(), sources=[])
+    return Config(
+        mascot=Mascot(
+            name=str(m.get("name", defaults.mascot.name)),
+            personality=str(m.get("personality", "")),
+            voice=str(m.get("voice", "")),
+            sign_off=str(m.get("sign_off", "") or ""),
+        ),
+        sources=sources,
+        alert_threshold=int(alerts.get("threshold", defaults.alert_threshold)),
+        alert_max_per_run=int(alerts.get("max_per_run", defaults.alert_max_per_run)),
+        alert_max_age_hours=float(alerts.get("max_age_hours", defaults.alert_max_age_hours)),
+        quiet_hours=list(alerts.get("quiet_hours", defaults.quiet_hours) or []),
+        quiet_override=int(alerts.get("quiet_override", defaults.quiet_override)),
+        digest_hours=list(digest.get("hours", defaults.digest_hours) or []),
+        digest_min_score=int(digest.get("min_score", defaults.digest_min_score)),
+        digest_max_items=int(digest.get("max_items", defaults.digest_max_items)),
+        max_item_age_hours=float(fetch.get("max_item_age_hours", defaults.max_item_age_hours)),
+        fetch_timeout=float(fetch.get("timeout_seconds", defaults.fetch_timeout)),
+        triage_model=str(ai.get("triage_model", defaults.triage_model)),
+        triage_effort=ai.get("triage_effort", defaults.triage_effort) or None,
+        analysis_model=str(ai.get("analysis_model", defaults.analysis_model)),
+        analysis_effort=ai.get("analysis_effort", defaults.analysis_effort) or None,
+    )
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(
+            f"ยังไม่ได้ตั้งค่า {name} — ใส่ในไฟล์ .env หรือ GitHub Secrets (ดู README)"
+        )
+    return value
