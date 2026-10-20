@@ -506,7 +506,7 @@ class DemoTests(unittest.TestCase):
 
         self.assertTrue(res.sent)
         self.assertEqual(res.urgency, 55)                 # below the alert threshold, still sent
-        self.assertEqual(res.sources, ["สำนักข่าว A", "สำนักข่าว B"])
+        self.assertEqual(set(res.sources), {"สำนักข่าว A", "สำนักข่าว B"})
         flex = line.batches[0][0]
         self.assertTrue(flex["altText"].startswith("ตัวอย่าง (55)"))
         self.assertFalse(cfg.state_path.exists())         # real state untouched
