@@ -590,6 +590,14 @@ class PostImageTests(unittest.TestCase):
                               lambda i: 620, 3, ("phrase",))
         self.assertEqual(lines, ["ใต้ฝนหนักถึงหนักมาก", "21–25 ต.ค."])
 
+    def test_numbers_stay_with_units(self):
+        from newsbot.card import _glue_numbers
+
+        glued = _glue_numbers("ปรับขึ้นน้ำมัน 60 สต. มีผล ตี 5 เช้านี้".split(" "))
+        self.assertIn("60 สต.", glued)
+        self.assertIn("ตี 5", glued)
+        self.assertIn("21 ต.ค.", _glue_numbers("ฝนหนัก 21 ต.ค.".split(" ")))
+
     def test_mood_mapping(self):
         from newsbot.card import card_text_from
 

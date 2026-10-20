@@ -96,6 +96,21 @@ def _split_long(f, word: str, width: float) -> list[str]:
     return out
 
 
+def _glue_numbers(chunks: list[str]) -> list[str]:
+    """Keep numbers with their short neighbours: "60 สต.", "ตี 5", "21 ต.ค." stay on one line."""
+    out: list[str] = []
+    for chunk in chunks:
+        prev = out[-1] if out else ""
+        prev_num = prev[-1:].isdigit()
+        this_num = chunk[:1].isdigit()
+        if prev and ((prev_num and (len(chunk) <= 4 or chunk.endswith(".")))
+                     or (this_num and len(prev) <= 2)):
+            out[-1] = f"{prev} {chunk}"
+        else:
+            out.append(chunk)
+    return out
+
+
 def wrap(f, text: str, widths, mode: str = "word") -> list[str] | None:
     """Greedy wrap. ``widths(i)`` is the max width of line ``i``.
 
@@ -105,7 +120,7 @@ def wrap(f, text: str, widths, mode: str = "word") -> list[str] | None:
     text = " ".join(text.split())
     if mode == "phrase":
         toks = []
-        for i, chunk in enumerate(text.split(" ")):
+        for i, chunk in enumerate(_glue_numbers(text.split(" "))):
             if i:
                 toks.append(" ")
             toks.append(chunk)
