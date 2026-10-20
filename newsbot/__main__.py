@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+import traceback
 from datetime import timedelta
 
 from .config import ROOT, TZ, load_config, load_dotenv, require_env
@@ -18,6 +20,14 @@ from .fetch import Item, fetch_all
 from .line import ConsoleNotifier, LineNotifier, build_alert_messages
 from .state import State
 from .timeutil import utcnow
+
+
+def annotate(level: str, message: str) -> None:
+    """On GitHub Actions, also show the message on the run's summary page."""
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not message:
+        return
+    text = message.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+    print(f"::{level} title=newsbot::{text}", flush=True)
 
 
 def _notifier(dry_run: bool):
@@ -38,11 +48,12 @@ def cmd_run(args) -> int:
     now = utcnow()
     report = run_once(cfg, state, analyst, notifier, now)
     state.save()
-    print(report.summary())
     u = analyst.usage
-    print(f"AI ({cfg.ai_provider}): {u['calls']} ครั้ง, "
-          f"input {u['input_tokens']:,} / output {u['output_tokens']:,} tokens")
+    summary = (report.summary() + f"\nAI ({cfg.ai_provider}): {u['calls']} ครั้ง, "
+               f"input {u['input_tokens']:,} / output {u['output_tokens']:,} tokens")
+    print(summary)
     # A broken feed is only a warning; failing to reach the AI or LINE is an error.
+    annotate("error" if report.errors else "notice", summary)
     return 1 if report.errors else 0
 
 
@@ -56,13 +67,17 @@ def cmd_demo(args) -> int:
     analyst = make_analyst(cfg)
     result = run_demo(cfg, analyst, notifier, utcnow())
     if not result.sent:
-        print(f"ส่งตัวอย่างไม่ได้: {result.message}")
+        msg = f"ส่งตัวอย่างไม่ได้: {result.message}"
+        print(msg)
+        annotate("error", msg)
         return 1
-    print(f"ส่งตัวอย่างแล้ว: {result.headline}")
-    print(f"คะแนน {result.urgency} · แหล่ง: {', '.join(result.sources)} "
-          f"· เลือกจากข่าว {result.candidates} รายการ")
     u = analyst.usage
-    print(f"AI ({cfg.ai_provider}): {u['calls']} ครั้ง")
+    msg = (f"ส่งตัวอย่างแล้ว: {result.headline}\n"
+           f"คะแนน {result.urgency} · แหล่ง: {', '.join(result.sources)} "
+           f"· เลือกจากข่าว {result.candidates} รายการ\n"
+           f"AI ({cfg.ai_provider}): {u['calls']} ครั้ง")
+    print(msg)
+    annotate("notice", msg)
     return 0
 
 
@@ -133,7 +148,16 @@ def main(argv=None) -> int:
     p = sub.add_parser("check-sources", help="ตรวจว่าแหล่งข่าวแต่ละแหล่งใช้ได้ไหม")
     p.set_defaults(func=cmd_check_sources)
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            annotate("error", exc.code)
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        annotate("error", f"{type(exc).__name__}: {exc}"[:1500])
+        return 1
 
 
 if __name__ == "__main__":
