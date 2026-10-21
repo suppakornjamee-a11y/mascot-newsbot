@@ -1,9 +1,12 @@
 """AI calls: (1) triage = group new headlines into events and score urgency,
-(2) analysis = extract the facts of one event and draft the post in the mascot's voice.
+(2) analysis = extract the facts of one event.
 
-Two interchangeable back ends: Gemini (free tier) and Claude (pay as you go)."""
+The writing and picture agents (newsbot.editor, newsbot.art) reuse the same clients
+through ``Analyst.ask``. Two interchangeable back ends: Gemini (free tier) and Claude
+(pay as you go)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -87,16 +90,9 @@ ANALYSIS_SCHEMA = {
         "urgency": {"type": "integer"},
         "sensitive": {"type": "boolean"},
         "caution": {"type": "string"},
-        "caption": {"type": "string"},
-        "hashtags": {"type": "array", "items": {"type": "string"}},
-        "card_kicker": {"type": "string"},
-        "card_headline": {"type": "string"},
-        "card_detail": {"type": "string"},
-        "mascot_mood": {"type": "string", "enum": MOODS},
     },
     "required": ["headline", "what_happened", "cause", "when", "where", "affected",
-                 "missing_info", "urgency", "sensitive", "caution", "caption", "hashtags",
-                 "card_kicker", "card_headline", "card_detail", "mascot_mood"],
+                 "missing_info", "urgency", "sensitive", "caution"],
     "additionalProperties": False,
 }
 
@@ -131,13 +127,10 @@ def triage_system() -> str:
 
 
 def analysis_system(cfg: Config) -> str:
-    m = cfg.mascot
-    sign_off = f'\n- ปิดแคปชันด้วยคำลงท้ายประจำตัว: "{m.sign_off}" (ยกเว้นข่าวเศร้าหรือข่าวความสูญเสีย)' if m.sign_off else ""
-    return f"""คุณเป็นบรรณาธิการข่าวของเพจข่าวที่มี mascot ชื่อ "{m.name}"
-บุคลิก: {m.personality}
-น้ำเสียง: {m.voice}
+    return f"""คุณเป็นนักข่าวฝ่ายข้อมูลของเพจข่าวที่มี mascot ชื่อ "{cfg.mascot.name}"
 
-หน้าที่: อ่านข่าวจากหลายแหล่งเกี่ยวกับเหตุการณ์เดียว สรุปข้อเท็จจริง แล้วร่างโพสต์ให้แอดมินตรวจก่อนโพสต์
+หน้าที่: อ่านข่าวจากหลายแหล่งเกี่ยวกับเหตุการณ์เดียว แล้วสรุปข้อเท็จจริงเป็นแฟ้มข้อมูล
+ให้บรรณาธิการนำไปเรียบเรียงเป็นโพสต์ต่อ (ไม่ต้องเขียนโพสต์เอง)
 
 กฎเรื่องข้อเท็จจริง (สำคัญที่สุด):
 - ใช้เฉพาะข้อมูลที่อยู่ในแหล่งข่าวที่ให้มา ห้ามเดา ห้ามเติมตัวเลข ชื่อ หรือสาเหตุเอง
@@ -147,24 +140,9 @@ def analysis_system(cfg: Config) -> str:
 - affected: ใครได้รับผลกระทบ พื้นที่ไหน จำนวนเท่าไร (ถ้ามี) และกระทบอย่างไร
 - ถ้าแหล่งข่าวรายงานไม่ตรงกัน ให้เขียนใน caution ว่าต่างกันตรงไหน
 - caution: สิ่งที่แอดมินควรระวังก่อนโพสต์ (ข้อมูลขัดแย้ง มีแหล่งเดียว ข่าวอ่อนไหว ประเด็นกฎหมาย) ถ้าไม่มีให้เป็น ""
-
-กฎการเขียนโพสต์:
-- เขียนใหม่ด้วยคำของตัวเองทั้งหมด ห้ามคัดลอกประโยคจากแหล่งข่าว
+- headline: พาดหัวสั้น ไม่เกิน 70 ตัวอักษร เขียนด้วยคำของตัวเอง
 - ห้ามระบุชื่อบุคคลธรรมดาที่เป็นผู้ต้องหา ผู้เสียหาย หรือผู้เสียชีวิต ใช้คำกลางๆ แทน (บุคคลสาธารณะและหน่วยงานระบุได้)
-- ข่าวที่มีการบาดเจ็บ เสียชีวิต ภัยพิบัติ หรือความรุนแรง: น้ำเสียงจริงจังและเห็นใจ ไม่เล่นมุก ไม่ใช้อีโมจิสนุกสนาน
-- caption: 3-6 บรรทัด ในน้ำเสียงของ {m.name} บรรทัดแรกบอกว่าเกิดอะไร ปิดด้วยสิ่งที่คนอ่านควรรู้หรือควรทำ (ถ้ามี) ไม่ต้องใส่แฮชแท็กหรือเครดิตแหล่งข่าวในแคปชัน{sign_off}
-- hashtags: 3-5 อัน ขึ้นต้นด้วย #
-- headline: พาดหัวสั้น ไม่เกิน 70 ตัวอักษร
-- ข่าวความสูญเสีย (มีผู้เสียชีวิต บาดเจ็บสาหัส ภัยพิบัติร้ายแรง): ไม่ต้องขึ้นต้นด้วยคำอุทานหรือคำทักทายสนุกๆ ใช้น้ำเสียงสงบและเห็นใจ
-
-ข้อความบนรูปโพสต์ (การ์ดข่าวของ {m.name}):
-- card_kicker: ประเภทข่าวสั้นๆ ไม่เกิน 22 ตัวอักษร เช่น "เตือนภัย · สภาพอากาศ", "ข่าวดี", "อัปเดตเศรษฐกิจ"
-- card_headline: พาดหัวบนรูป ไม่เกิน 32 ตัวอักษร อ่านแล้วรู้ใจความทันที เว้นวรรคระหว่างวลีแบบที่คนไทยเขียน ห้ามใส่คำอุทานหรือแฮชแท็ก
-- card_detail: 1-2 ประโยค ไม่เกิน 110 ตัวอักษร บอกว่าเกิดอะไร และทุกคนควรรู้หรือทำอะไรต่อ
-- mascot_mood: อารมณ์ของ {m.name} บนรูป
-  smile = ข่าวทั่วไป อัปเดตประจำวัน
-  excited = ข่าวดี ข่าวน่ายินดี เปิดตัวใหม่
-  serious = ประกาศสำคัญ เตือนภัย ข่าวร้าย ข่าวความสูญเสีย
+- sensitive = เกี่ยวกับความตาย ความรุนแรง ภัยพิบัติ เด็ก การเมืองที่ขัดแย้งสูง สถาบัน หรือข้อกล่าวหาต่อบุคคล
 
 {URGENCY_RUBRIC}
 
@@ -187,8 +165,18 @@ class Analyst:
         self.usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
 
     def _call(self, *, model: str, effort: str | None, system: str, payload: dict,
-              schema: dict, max_tokens: int) -> dict:
+              schema: dict, max_tokens: int, images: list[bytes] | None = None) -> dict:
         raise NotImplementedError
+
+    def ask(self, *, system: str, payload: dict, schema: dict, model: str | None = None,
+            effort: str | None = None, max_tokens: int = 16000,
+            images: list[bytes] | None = None) -> dict:
+        """One structured call for the other agents. ``images`` are JPEG bytes shown
+        before the payload, in order. Defaults to the analysis model."""
+        return self._call(model=model or self.cfg.analysis_model,
+                          effort=effort if effort is not None else self.cfg.analysis_effort,
+                          system=system, payload=payload, schema=schema,
+                          max_tokens=max_tokens, images=images)
 
     @staticmethod
     def _user_text(payload: dict) -> str:
@@ -254,15 +242,9 @@ class Analyst:
                           system=analysis_system(self.cfg), payload=payload,
                           schema=ANALYSIS_SCHEMA, max_tokens=16000)
         data["urgency"] = max(0, min(100, int(data.get("urgency", event.urgency))))
-        mood = str(data.get("mascot_mood", "smile")).lower()
-        if mood not in MOODS:
-            mood = "smile"
-        # Never a cheerful mascot on a disaster, crime or otherwise sensitive story.
-        if data.get("sensitive") or event.sensitive or event.category in SERIOUS_CATEGORIES:
-            mood = "serious"
-        data["mascot_mood"] = mood
-        data["hashtags"] = [h if h.startswith("#") else f"#{h}"
-                            for h in (str(x).strip() for x in data.get("hashtags", [])) if h]
+        data["sensitive"] = bool(data.get("sensitive", False))
+        data["missing_info"] = [str(m).strip() for m in data.get("missing_info", [])
+                                if str(m).strip()]
         return data
 
 
@@ -279,15 +261,21 @@ class ClaudeAnalyst(Analyst):
         self.client = client or anthropic.Anthropic()
 
     def _call(self, *, model: str, effort: str | None, system: str, payload: dict,
-              schema: dict, max_tokens: int) -> dict:
+              schema: dict, max_tokens: int, images: list[bytes] | None = None) -> dict:
         output_config: dict = {"format": {"type": "json_schema", "schema": schema}}
         if effort:
             output_config["effort"] = effort
+        content: str | list[dict] = self._user_text(payload)
+        if images:
+            content = [{"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg",
+                "data": base64.b64encode(img).decode("ascii")}} for img in images]
+            content.append({"type": "text", "text": self._user_text(payload)})
         kwargs = dict(
             model=model,
             max_tokens=max_tokens,
             system=system,
-            messages=[{"role": "user", "content": self._user_text(payload)}],
+            messages=[{"role": "user", "content": content}],
             output_config=output_config,
         )
         try:
@@ -354,8 +342,11 @@ class GeminiAnalyst(Analyst):
                 raise
 
     def _call(self, *, model: str, effort: str | None, system: str, payload: dict,
-              schema: dict, max_tokens: int) -> dict:
+              schema: dict, max_tokens: int, images: list[bytes] | None = None) -> dict:
         contents = self._user_text(payload)
+        if images:
+            contents = [self._types.Part.from_bytes(data=img, mime_type="image/jpeg")
+                        for img in images] + [self._types.Part.from_text(text=contents)]
         try:
             resp = self._generate(model, contents, self._config(system, schema, max_tokens, effort))
         except self._errors.ClientError as exc:

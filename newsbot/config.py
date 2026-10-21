@@ -53,11 +53,17 @@ class Config:
     card_size: tuple[int, int] = (1080, 1080)
     card_page_name: str = ""
     card_branch: str = "cards"
+    card_background: str = "photo"        # photo (Pixabay/Pexels) | ai (Gemini paints) | plain
+    card_ai_pick: bool = True              # let the AI choose among candidate photos
+    card_image_model: str = "gemini-nano-banana-2.1"
+    editor_fact_check: bool = True         # second AI pass checks the post against sources
 
     @property
     def api_key_env(self) -> str:
         return "ANTHROPIC_API_KEY" if self.ai_provider == "claude" else "GEMINI_API_KEY"
 
+
+BACKGROUNDS = ("photo", "ai", "plain")
 
 AI_DEFAULTS = {
     "gemini": {"triage_model": "gemini-3.5-flash-lite", "triage_level": "low",
@@ -89,6 +95,7 @@ def load_config(path: Path | None = None) -> Config:
     fetch = raw.get("fetch") or {}
     ai = raw.get("ai") or {}
     card = raw.get("card") or {}
+    editor = raw.get("editor") or {}
 
     sources = []
     for s in raw.get("sources") or []:
@@ -107,6 +114,9 @@ def load_config(path: Path | None = None) -> Config:
     if provider not in AI_DEFAULTS:
         raise SystemExit(f"ai.provider ต้องเป็น gemini หรือ claude (ตอนนี้คือ '{provider}')")
     p = {**AI_DEFAULTS[provider], **(ai.get(provider) or {})}
+    background = str(card.get("background", defaults.card_background) or "plain").strip().lower()
+    if background not in BACKGROUNDS:
+        raise SystemExit(f"card.background ต้องเป็น photo, ai หรือ plain (ตอนนี้คือ '{background}')")
     return Config(
         mascot=Mascot(
             name=str(m.get("name", defaults.mascot.name)),
@@ -134,6 +144,11 @@ def load_config(path: Path | None = None) -> Config:
         card_size=tuple(int(x) for x in (card.get("size") or [1080, 1080]))[:2],
         card_page_name=str(card.get("page_name", "") or ""),
         card_branch=str(card.get("branch", "cards") or "cards"),
+        card_background=background,
+        card_ai_pick=bool(card.get("ai_pick", defaults.card_ai_pick)),
+        card_image_model=str(card.get("image_model", defaults.card_image_model)
+                             or defaults.card_image_model),
+        editor_fact_check=bool(editor.get("fact_check", defaults.editor_fact_check)),
     )
 
 

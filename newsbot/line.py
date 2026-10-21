@@ -61,11 +61,14 @@ def urgency_color(score: int) -> str:
 # ---------------------------------------------------------------- alert
 def build_alert_messages(event: Event, analysis: dict, now: datetime,
                          mascot_name: str = "", label: str = "ข่าวด่วน",
-                         image: tuple[str, str] | None = None) -> list[dict]:
-    """A Flex card with the analysis, the post image (if any), and the caption ready to copy.
+                         image=None) -> list[dict]:
+    """A Flex card with the analysis, the post image (if any), and the post ready to copy.
 
-    ``image`` is (full-size URL, preview URL), both public HTTPS.
+    ``image`` is a pipeline.PostImage (url, preview_url, credit, link); both URLs must be
+    public HTTPS.
     """
+    sent_image = bool(image and _https(image.url) and _https(image.preview_url))
+    credit = image.credit if sent_image else ""
     score = int(analysis.get("urgency", event.urgency))
     category = CATEGORIES.get(event.category, "อื่นๆ")
     first = event.earliest
@@ -87,10 +90,19 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
     missing = [m for m in analysis.get("missing_info", []) if str(m).strip()]
     if missing:
         body.append(_row("ยังไม่รู้", " · ".join(missing[:4])))
+    review = analysis.get("review") or {}
+    if review.get("checked"):
+        issues = review.get("issues") or []
+        body.append(_row("ตรวจทาน", f"แก้แล้ว {len(issues)} จุด: " + " / ".join(issues[:3])
+                         if issues else "ผ่าน ไม่พบจุดที่ต้องแก้"))
+    if credit:
+        body.append(_row("ภาพ", credit.replace("ภาพประกอบ: ", "")))
 
     warnings = []
     if analysis.get("caution"):
         warnings.append(analysis["caution"])
+    if review.get("error"):
+        warnings.append("ตรวจทานอัตโนมัติไม่สำเร็จ ตรวจตัวเลขและชื่อเทียบกับข่าวต้นทางเองก่อนโพสต์")
     if len(event.source_names) < 2 and not event.has_official:
         warnings.append("มีแหล่งข่าวเดียว ควรรอยืนยันก่อนโพสต์")
     if analysis.get("sensitive") or event.sensitive:
@@ -135,22 +147,25 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
                             "contents": buttons}
 
     alt = _cut(f"{label} ({score}): {headline}", 400)
-    caption_msg = {"type": "text", "text": _cut(build_post_text(event, analysis), 4900)}
     messages = [{"type": "flex", "altText": alt, "contents": bubble}]
-    if image and _https(image[0]) and _https(image[1]):
-        messages.append({"type": "image", "originalContentUrl": image[0],
-                         "previewImageUrl": image[1]})
-    messages.append(caption_msg)
+    if sent_image:
+        messages.append({"type": "image", "originalContentUrl": image.url,
+                         "previewImageUrl": image.preview_url})
+    post = build_post_text(event, analysis, credit)
+    messages.append({"type": "text", "text": _cut(post, 4900)})
     return messages
 
 
-def build_post_text(event: Event, analysis: dict) -> str:
+def build_post_text(event: Event, analysis: dict, image_credit: str = "") -> str:
     """The post text, ready to long-press and copy in LINE."""
     parts = [analysis.get("caption", "").strip()]
     tags = " ".join(analysis.get("hashtags", []))
     if tags:
         parts.append(tags)
-    parts.append("ที่มา: " + ", ".join(event.source_names))
+    credits = "ที่มา: " + ", ".join(event.source_names)
+    if image_credit:
+        credits += "\n" + image_credit
+    parts.append(credits)
     return "\n\n".join(p for p in parts if p)
 
 

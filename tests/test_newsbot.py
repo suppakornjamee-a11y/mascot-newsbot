@@ -55,8 +55,9 @@ def claude_config() -> Config:
 
 
 def make_config(tmp: Path) -> Config:
+    # plain background: tests never search for photos unless they pass their own art agent
     return Config(mascot=Mascot(name="น้องทดสอบ"), sources=[SRC_A, SRC_B, SRC_TMD],
-                  state_path=tmp / "state.json", quiet_hours=[0, 6])
+                  state_path=tmp / "state.json", quiet_hours=[0, 6], card_background="plain")
 
 
 class FakeAnalyst:
@@ -436,20 +437,27 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(analyst.usage["output_tokens"], 75)   # answer + thinking
 
     def test_analysis_uses_analysis_model(self):
+        from newsbot.ai import ANALYSIS_SCHEMA
+
         seen = []
 
         def handler(request: httpx.Request):
-            seen.append(str(request.url))
-            return self._reply(FakeAnalyst().analyze(type("E", (), {
-                "headline": "h", "urgency": 80})(), None))
+            seen.append((str(request.url), json.loads(request.content)))
+            facts = {k: v for k, v in FakeAnalyst().analyze(type("E", (), {
+                "headline": "h", "urgency": 80})(), None).items()
+                if k in ANALYSIS_SCHEMA["properties"]}
+            return self._reply({**facts, "urgency": 130, "missing_info": ["เวลา", " "]})
 
         now = bkk(2026, 10, 21, 14, 5)
         state = State(Path(tempfile.mkdtemp()) / "s.json")
         ev = state.new_event("น้ำท่วม", "disaster", now)
         ev.add_items(feeds_round1(now)[SRC_A.name][:1])
         out = self._analyst(handler).analyze(ev, now)
-        self.assertIn("models/gemini-3.8-flash:generateContent", seen[0])
-        self.assertEqual(out["mascot_mood"], "serious")     # disaster story: never cheerful
+        url, body = seen[0]
+        self.assertIn("models/gemini-3.8-flash:generateContent", url)
+        self.assertNotIn("caption", body["generationConfig"]["responseJsonSchema"]["properties"])
+        self.assertEqual(out["urgency"], 100)                # clamped
+        self.assertEqual(out["missing_info"], ["เวลา"])      # blanks dropped
 
     def test_thinking_level_rejected_falls_back(self):
         calls = []

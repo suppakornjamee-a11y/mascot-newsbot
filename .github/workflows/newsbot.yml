@@ -21,7 +21,7 @@ concurrency:
 jobs:
   newsbot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15          # ข่าวด่วนแต่ละเรื่องใช้ AI 4 ครั้ง (วิเคราะห์ เรียบเรียง ตรวจทาน เลือกภาพ)
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +44,8 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

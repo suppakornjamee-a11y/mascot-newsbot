@@ -111,21 +111,28 @@ def cmd_test_line(args) -> int:
         "affected": "ผู้ใช้รถใช้ถนนในเขตที่น้ำท่วมขัง (ตัวอย่าง)",
         "missing_info": ["ระยะเวลาที่น้ำจะลด"],
         "urgency": 78, "sensitive": False, "caution": "",
-        "caption": "ปิ๊ง! ถ้าเห็นข้อความนี้ แปลว่าระบบส่งข่าวเข้า LINE ได้แล้ว\n"
-                   "ข้อความนี้คือแคปชันที่กดค้างเพื่อคัดลอกไปโพสต์ได้เลย",
+        "caption": "ปิ๊ง! ถ้าเห็นข้อความนี้ แปลว่าระบบส่งข่าวเข้า LINE ได้แล้ว\n\n"
+                   "ข้อความนี้คือโพสต์ที่ AI เรียบเรียงให้ กดค้างเพื่อคัดลอกไปโพสต์ได้เลย",
         "hashtags": ["#ทดสอบระบบ"],
-        "card_kicker": "ทดสอบระบบ", "card_headline": "ระบบส่งข่าวเข้า LINE ได้แล้ว",
+        "card_topic": "ทดสอบระบบ", "card_headline": "ระบบส่งข่าวเข้า LINE ได้แล้ว",
         "card_detail": "นี่คือรูปโพสต์ตัวอย่างจากน้องปิ๊ง ข่าวจริงจะใช้หน้าตาแบบนี้",
         "mascot_mood": "excited",
+        "image_queries": ["heavy rain city street", "rain umbrella street", "rain clouds"],
+        "review": {"checked": True, "issues": []},
     }
-    from .pipeline import RunReport, make_post_image
+    from .pipeline import RunReport, default_art, make_post_image
 
     cfg = load_config()
     report = RunReport()
-    image = make_post_image(cfg, _images(cfg), ev, analysis, now, urgent=False, report=report)
+    images = _images(cfg)
+    # No AI here: test-line only checks LINE, image hosting and the photo key.
+    art = default_art(cfg, None) if images is not None else None
+    image = make_post_image(cfg, images, ev, analysis, now, urgent=False, report=report, art=art)
     notifier = _notifier(args.dry_run)
     notifier.push(build_alert_messages(ev, analysis, now, cfg.mascot.name, image=image))
-    msg = "ส่งข้อความทดสอบแล้ว" + (f" พร้อมรูป {image[0]}" if image else " (ไม่มีรูป)")
+    msg = "ส่งข้อความทดสอบแล้ว" + (f" พร้อมรูป {image.url}" if image else " (ไม่มีรูป)")
+    if image and image.credit:
+        msg += f"\n{image.credit}"
     for w in report.warnings:
         msg += f"\nคำเตือน: {w}"
     print(msg)
