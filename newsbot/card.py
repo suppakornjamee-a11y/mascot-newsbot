@@ -404,8 +404,11 @@ PHOTO_HEAD_SIZES = ((78, 3), (70, 3), (62, 3), (56, 4), (50, 4), (46, 4))
 
 
 def _has_orphan(f, lines: list[str], width: float) -> bool:
-    """A stray short line, e.g. "ตร." alone between two long ones."""
-    return len(lines) > 1 and any(_length(f, line) < width * 0.25 for line in lines)
+    """A stray short line, e.g. "ตร." or "ครม." alone above or between long ones."""
+    if len(lines) < 2:
+        return False
+    lengths = [_length(f, line) for line in lines]
+    return min(lengths) < width * 0.25 or min(lengths) < max(lengths) * 0.4
 
 
 def _photo_headline(text: str, width: float) -> tuple[ImageFont.FreeTypeFont, int, list[str]]:

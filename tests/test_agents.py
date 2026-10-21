@@ -555,6 +555,8 @@ class PhotoCardTests(unittest.TestCase):
         f, size, lines = _photo_headline("อุเทนถวาย ยื่น ตร. ขอเจรจาสงบศึก", 578)
         self.assertNotIn("ตร.", lines)
         self.assertLessEqual(len(lines), 3)
+        f, size, lines = _photo_headline("ครม. เคาะหมื่นล้าน ช่วยน้ำท่วม", 578)
+        self.assertNotIn("ครม.", lines)
 
     def test_photo_card_used_and_credited(self):
         now = bkk(2026, 10, 21, 14, 5)
