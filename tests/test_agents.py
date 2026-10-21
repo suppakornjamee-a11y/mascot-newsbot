@@ -287,6 +287,23 @@ class ArtDirectorTests(unittest.TestCase):
         bg, _ = ArtDirector(self.cfg, ai, pex).find(self.ev, self.post)
         self.assertEqual(bg.credit, "ภาพประกอบ: ช่างภาพ 3 / Pexels")
 
+    def test_busy_main_model_falls_back_to_triage_model(self):
+        class BusyThenOk:
+            def __init__(self):
+                self.models = []
+
+            def ask(self, *, model=None, **kw):
+                self.models.append(model)
+                if model is None:
+                    raise RuntimeError("503 UNAVAILABLE high demand")
+                return {"suitable": [0], "reason": "ok"}
+
+        pex = FakePexels({"flooded street Thailand": [photo(1)]})
+        ai = BusyThenOk()
+        bg, problem = ArtDirector(self.cfg, ai, pex).find(self.ev, self.post)
+        self.assertEqual((bg.credit, problem), ("ภาพประกอบ: ช่างภาพ 1 / Pexels", ""))
+        self.assertEqual(ai.models, [None, self.cfg.triage_model])
+
     def test_without_ai_first_photo_that_downloads(self):
         pex = FakePexels({"flooded street Thailand": [photo(1), photo(2)]},
                          broken_downloads={"https://img/1/full"})

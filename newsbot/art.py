@@ -391,8 +391,16 @@ class ArtDirector:
             "candidates": [{"number": n, "description": candidates[i].alt}
                            for n, i in enumerate(shown)],
         }
-        data = self.ai.ask(system=PICK_SYSTEM, payload=payload, schema=PICK_SCHEMA,
-                           images=thumbs, effort="low", max_tokens=4000)
+        ask = dict(system=PICK_SYSTEM, payload=payload, schema=PICK_SCHEMA, images=thumbs,
+                   effort="low", max_tokens=4000)
+        try:
+            data = self.ai.ask(**ask)
+        except Exception as exc:
+            # The main model is often busy (503). The lighter triage model can look at
+            # images too; if it also fails, find() falls back to the plain card.
+            log.warning("photo pick failed on the main model (%s), trying %s",
+                        str(exc)[:80], self.cfg.triage_model)
+            data = self.ai.ask(**ask, model=self.cfg.triage_model)
         order = []
         for n in data.get("suitable", []):
             try:
