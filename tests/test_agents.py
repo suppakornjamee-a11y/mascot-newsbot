@@ -74,7 +74,7 @@ class ScriptedAI:
             images=None):
         name = {id(POST_SCHEMA): "write", id(REVIEW_SCHEMA): "review",
                 id(PICK_SCHEMA): "pick"}[id(schema)]
-        self.calls.append((name, payload, images))
+        self.calls.append((name, payload, images, model))
         answer = self.answers[name]
         if isinstance(answer, Exception):
             raise answer
@@ -115,6 +115,8 @@ class EditorTests(unittest.TestCase):
         post = NewsEditor(self.cfg, ai).write(self.ev, FACTS, self.now)
 
         self.assertEqual([c[0] for c in ai.calls], ["write", "review"])
+        # writing on the analysis model, checking on the lighter review model
+        self.assertEqual([c[3] for c in ai.calls], [None, self.cfg.review_model])
         self.assertNotIn("300", post["caption"])
         self.assertEqual(post["review"], {"checked": True, "issues": FIXED["issues"]})
         self.assertEqual(post["mascot_mood"], "serious")        # disaster: never cheerful
@@ -267,7 +269,8 @@ class ArtDirectorTests(unittest.TestCase):
         self.assertEqual(bg.credit, "ภาพประกอบ: ช่างภาพ 3 / Pexels")   # candidates: 1, 3
         self.assertEqual(bg.link, "https://www.pexels.com/photo/3/")
         self.assertEqual(bg.image.size, (1600, 1200))
-        name, payload, images = ai.calls[0]
+        name, payload, images, model = ai.calls[0]
+        self.assertEqual(model, self.cfg.review_model)
         self.assertEqual(len(images), 2)                       # 640 px photo was skipped
         self.assertTrue(payload["sad_or_sensitive_story"])
         self.assertEqual([c["description"] for c in payload["candidates"]],
@@ -287,14 +290,16 @@ class ArtDirectorTests(unittest.TestCase):
         bg, _ = ArtDirector(self.cfg, ai, pex).find(self.ev, self.post)
         self.assertEqual(bg.credit, "ภาพประกอบ: ช่างภาพ 3 / Pexels")
 
-    def test_busy_main_model_falls_back_to_triage_model(self):
+    def test_busy_review_model_falls_back_to_analysis_model(self):
+        cfg = self.cfg
+
         class BusyThenOk:
             def __init__(self):
                 self.models = []
 
             def ask(self, *, model=None, **kw):
                 self.models.append(model)
-                if model is None:
+                if model == cfg.review_model:
                     raise RuntimeError("503 UNAVAILABLE high demand")
                 return {"suitable": [0], "reason": "ok"}
 
@@ -302,7 +307,7 @@ class ArtDirectorTests(unittest.TestCase):
         ai = BusyThenOk()
         bg, problem = ArtDirector(self.cfg, ai, pex).find(self.ev, self.post)
         self.assertEqual((bg.credit, problem), ("ภาพประกอบ: ช่างภาพ 1 / Pexels", ""))
-        self.assertEqual(ai.models, [None, self.cfg.triage_model])
+        self.assertEqual(ai.models, [cfg.review_model, cfg.analysis_model])
 
     def test_without_ai_first_photo_that_downloads(self):
         pex = FakePexels({"flooded street Thailand": [photo(1), photo(2)]},
@@ -652,6 +657,8 @@ class ConfigTests(unittest.TestCase):
 
         cfg = load_config()
         self.assertEqual(cfg.card_background, "photo")
+        self.assertEqual(cfg.review_model, "gemini-3.5-flash-lite")
+        self.assertNotEqual(cfg.review_model, cfg.analysis_model)
         self.assertTrue(cfg.card_ai_pick and cfg.editor_fact_check)
 
         text = (ROOT / "config.yaml").read_text(encoding="utf-8")

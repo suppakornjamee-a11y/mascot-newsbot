@@ -48,6 +48,10 @@ class Config:
     triage_effort: str | None = "low"      # Claude effort / Gemini thinking level
     analysis_model: str = "gemini-3.8-flash"
     analysis_effort: str | None = "medium"
+    # Fact-check and photo pick. A lighter model with its own free quota: the free tier
+    # of the analysis model allows only ~20 requests a day per project.
+    review_model: str = "gemini-3.5-flash-lite"
+    review_effort: str | None = "medium"
     state_path: Path = ROOT / "data" / "state.json"
     card_enabled: bool = True
     card_size: tuple[int, int] = (1080, 1080)
@@ -67,9 +71,11 @@ BACKGROUNDS = ("photo", "ai", "plain")
 
 AI_DEFAULTS = {
     "gemini": {"triage_model": "gemini-3.5-flash-lite", "triage_level": "low",
-               "analysis_model": "gemini-3.8-flash", "analysis_level": "medium"},
+               "analysis_model": "gemini-3.8-flash", "analysis_level": "medium",
+               "review_model": "gemini-3.5-flash-lite", "review_level": "medium"},
     "claude": {"triage_model": "claude-haiku-5-5", "triage_level": "low",
-               "analysis_model": "claude-sonnet-5-5", "analysis_level": "medium"},
+               "analysis_model": "claude-sonnet-5-5", "analysis_level": "medium",
+               "review_model": "claude-haiku-5-5", "review_level": "medium"},
 }
 
 
@@ -140,6 +146,8 @@ def load_config(path: Path | None = None) -> Config:
         triage_effort=p.get("triage_level") or None,
         analysis_model=str(p["analysis_model"]),
         analysis_effort=p.get("analysis_level") or None,
+        review_model=str(p["review_model"]),
+        review_effort=p.get("review_level") or None,
         card_enabled=bool(card.get("enabled", True)),
         card_size=tuple(int(x) for x in (card.get("size") or [1080, 1080]))[:2],
         card_page_name=str(card.get("page_name", "") or ""),

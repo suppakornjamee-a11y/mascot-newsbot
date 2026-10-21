@@ -6,7 +6,8 @@ Two passes on the same AI client:
              detail), the mascot's mood, and a brief for the picture agent.
 2. review  - a fact-checker compares the draft with the source articles and returns a
              corrected copy plus the list of what it fixed. Optional (editor.fact_check).
-             If the check itself fails, the draft is kept and the admin is warned.
+             Runs on the review model, which has its own free quota. If the check itself
+             fails, the draft is kept and the admin is warned.
 """
 from __future__ import annotations
 
@@ -160,7 +161,8 @@ class NewsEditor:
             try:
                 checked = self.ai.ask(system=review_system(self.cfg),
                                       payload={**base, "draft": {k: post[k] for k in TEXT_FIELDS}},
-                                      schema=REVIEW_SCHEMA)
+                                      schema=REVIEW_SCHEMA, model=self.cfg.review_model,
+                                      effort=self.cfg.review_effort)
                 issues = [str(i).strip() for i in checked.get("issues", []) if str(i).strip()]
                 if issues:
                     for k in TEXT_FIELDS:

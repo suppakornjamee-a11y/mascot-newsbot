@@ -393,14 +393,16 @@ class ArtDirector:
         }
         ask = dict(system=PICK_SYSTEM, payload=payload, schema=PICK_SCHEMA, images=thumbs,
                    effort="low", max_tokens=4000)
-        try:
-            data = self.ai.ask(**ask)
+        try:  # the review model: its own free quota, separate from the analysis model
+            data = self.ai.ask(**ask, model=self.cfg.review_model)
         except Exception as exc:
-            # The main model is often busy (503). The lighter triage model can look at
-            # images too; if it also fails, find() falls back to the plain card.
-            log.warning("photo pick failed on the main model (%s), trying %s",
-                        str(exc)[:80], self.cfg.triage_model)
-            data = self.ai.ask(**ask, model=self.cfg.triage_model)
+            if self.cfg.analysis_model == self.cfg.review_model:
+                raise
+            # Busy (503) or out of quota: try the analysis model once. If that fails
+            # too, find() falls back to the plain card.
+            log.warning("photo pick failed on %s (%s), trying %s", self.cfg.review_model,
+                        str(exc)[:80], self.cfg.analysis_model)
+            data = self.ai.ask(**ask, model=self.cfg.analysis_model)
         order = []
         for n in data.get("suitable", []):
             try:

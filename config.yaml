@@ -56,13 +56,17 @@ ai:
   gemini:
     triage_model: "gemini-3.5-flash-lite"   # ตัวคัดกรอง/จัดกลุ่มข่าว
     triage_level: "low"                     # ระดับการคิด: minimal / low / medium / high
-    analysis_model: "gemini-3.8-flash"      # ตัววิเคราะห์ละเอียด + เขียนแคปชัน
-    analysis_level: "medium"
+    analysis_model: "gemini-3.8-flash"      # ตัววิเคราะห์ละเอียด + เรียบเรียงโพสต์
+    analysis_level: "medium"                # (free tier ได้ราววันละ 20 ครั้ง = ข่าวด่วนราว 10 เรื่อง/วัน)
+    review_model: "gemini-3.5-flash-lite"   # ตัวตรวจทาน + เลือกภาพ (ใช้โควตาแยกจากตัววิเคราะห์)
+    review_level: "medium"
   claude:
     triage_model: "claude-haiku-5-5"
     triage_level: "low"
     analysis_model: "claude-sonnet-5-5"
     analysis_level: "medium"
+    review_model: "claude-haiku-5-5"
+    review_level: "medium"
 
 # ---------- แหล่งข่าว (RSS) ----------
 # official: true = หน่วยงานรัฐ ใช้ยืนยันข้อเท็จจริงได้
