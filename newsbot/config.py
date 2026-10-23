@@ -61,6 +61,7 @@ class Config:
     card_ai_pick: bool = True              # let the AI choose among candidate photos
     card_image_provider: str = "cloudflare"   # cloudflare (free allowance) | gemini (paid)
     card_image_model: str = ""                  # empty: the provider's default model
+    card_image_style: str = "painting"          # painting | realistic | flat
     editor_fact_check: bool = True         # second AI pass checks the post against sources
 
     @property
@@ -70,6 +71,7 @@ class Config:
 
 BACKGROUNDS = ("photo", "ai", "plain")
 IMAGE_PROVIDERS = ("cloudflare", "gemini")
+IMAGE_STYLES = ("painting", "realistic", "flat")   # keep in sync with art.PAINT_STYLES
 
 AI_DEFAULTS = {
     "gemini": {"triage_model": "gemini-3.5-flash-lite", "triage_level": "low",
@@ -130,6 +132,11 @@ def load_config(path: Path | None = None) -> Config:
     if image_provider not in IMAGE_PROVIDERS:
         raise SystemExit(f"card.image_provider ต้องเป็น cloudflare หรือ gemini "
                          f"(ตอนนี้คือ '{image_provider}')")
+    image_style = str(card.get("image_style", defaults.card_image_style)
+                      or "painting").strip().lower()
+    if image_style not in IMAGE_STYLES:
+        raise SystemExit(f"card.image_style ต้องเป็น painting, realistic หรือ flat "
+                         f"(ตอนนี้คือ '{image_style}')")
     return Config(
         mascot=Mascot(
             name=str(m.get("name", defaults.mascot.name)),
@@ -163,6 +170,7 @@ def load_config(path: Path | None = None) -> Config:
         card_ai_pick=bool(card.get("ai_pick", defaults.card_ai_pick)),
         card_image_provider=image_provider,
         card_image_model=str(card.get("image_model", "") or "").strip(),
+        card_image_style=image_style,
         editor_fact_check=bool(editor.get("fact_check", defaults.editor_fact_check)),
     )
 

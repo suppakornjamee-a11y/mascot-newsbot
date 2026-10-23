@@ -6,9 +6,9 @@ on:
   workflow_dispatch:            # ปุ่ม "Run workflow" สำหรับกดรันเอง
     inputs:
       command:
-        description: "คำสั่ง: run = รันปกติ, demo = ส่งข่าวเด่น 24 ชม.เป็นตัวอย่าง, test-line = ส่งข้อความทดสอบ, check-sources = ตรวจแหล่งข่าว"
+        description: "คำสั่ง: run = รันปกติ, demo = ส่งข่าวเด่น 24 ชม.เป็นตัวอย่าง, test-line = ส่งข้อความทดสอบ, check-sources = ตรวจแหล่งข่าว, paint-test = ให้ AI วาดภาพตัวอย่างทุกสไตล์ (ไม่ส่ง LINE)"
         type: choice
-        options: [run, demo, test-line, check-sources]
+        options: [run, demo, test-line, check-sources, paint-test]
         default: run
 
 permissions:

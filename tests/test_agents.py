@@ -807,12 +807,63 @@ class AIPaintingTests(unittest.TestCase):
         painter = FakePainter()
         ArtDirector(self.cfg, None, None, painter).find(self.ev, self.post)
         prompt, ratio = painter.prompts[0]
-        self.assertTrue(prompt.startswith("Flat vector editorial illustration"))  # style first
+        self.assertTrue(prompt.startswith("Semi-realistic digital painting"))   # style first
+        self.assertIn("not a photograph", prompt)
         self.assertIn("A flooded Thai village road", prompt)
         self.assertIn("signboards", prompt)
         self.assertIn("No text", prompt)
         self.assertIn("somber", prompt)
         self.assertEqual(ratio, "1:1")
+
+    def test_styles(self):
+        from newsbot.art import IMAGE_STYLES, paint_prompt
+        from newsbot.config import IMAGE_STYLES as CONFIG_STYLES
+
+        self.assertEqual(IMAGE_STYLES, CONFIG_STYLES)
+        self.assertTrue(paint_prompt("x", "flat").startswith("Flat vector"))
+        realistic = paint_prompt("x", "realistic")
+        self.assertIn("documentary news photograph", realistic)
+        self.assertNotIn("not a photograph", realistic)
+        self.assertIn("No real or identifiable people", realistic)
+        self.assertNotIn("somber", paint_prompt("x", "painting", somber=False))
+
+        self.cfg.card_image_style = "flat"
+        painter = FakePainter()
+        ArtDirector(self.cfg, None, None, painter).find(self.ev, self.post)
+        self.assertTrue(painter.prompts[0][0].startswith("Flat vector"))
+
+    def test_check_follows_style(self):
+        from newsbot.art import check_system
+
+        self.assertIn("ภาพถ่ายข่าวจริง", check_system("painting"))
+        self.assertNotIn("ภาพถ่ายข่าวจริง", check_system("realistic"))
+        self.assertIn("บุคคลจริง", check_system("realistic"))
+        self.assertNotIn("{look_rule}", check_system("flat"))
+
+        self.cfg.card_image_style = "realistic"
+        seen = []
+
+        class Recorder(ScriptedAI):
+            def ask(self, **kw):
+                seen.append(kw["system"])
+                return super().ask(**kw)
+
+        ArtDirector(self.cfg, Recorder(check={"ok": True, "reason": ""}), None,
+                    FakePainter()).find(self.ev, self.post)
+        self.assertNotIn("ภาพถ่ายข่าวจริง", seen[0])
+
+    def test_paint_test_makes_every_card_and_survives_errors(self):
+        from newsbot.art import IMAGE_STYLES
+        from newsbot.pipeline import PAINT_SAMPLES, run_paint_test
+
+        host = FakeImageHost()
+        painters = {"@cf/a/good": FakePainter(), "@cf/a/broken": FakePainter(RuntimeError("400"))}
+        lines = run_paint_test(self.cfg, painters, host, bkk(2026, 10, 23, 18, 0), IMAGE_STYLES)
+        per_model = len(PAINT_SAMPLES) * len(IMAGE_STYLES)
+        self.assertEqual(len(lines), 2 * per_model)
+        self.assertEqual(len(host.files), per_model)               # only the good painter
+        self.assertTrue(all(k.startswith("cards/paint-test/20261023-1800/") for k in host.files))
+        self.assertEqual(sum("วาดไม่สำเร็จ" in line for line in lines), per_model)
 
 
 class QuotaAndTimeTests(unittest.TestCase):
@@ -1002,6 +1053,14 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             load_config(tmp)
         tmp.write_text(text.replace("image_provider: cloudflare", "image_provider: midjourney"),
+                       encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            load_config(tmp)
+        self.assertEqual(load_config().card_image_style, "painting")
+        tmp.write_text(text.replace("image_style: painting", "image_style: Realistic"),
+                       encoding="utf-8")
+        self.assertEqual(load_config(tmp).card_image_style, "realistic")
+        tmp.write_text(text.replace("image_style: painting", "image_style: anime"),
                        encoding="utf-8")
         with self.assertRaises(SystemExit):
             load_config(tmp)

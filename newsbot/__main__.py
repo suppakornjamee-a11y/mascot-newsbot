@@ -5,6 +5,7 @@
     python -m newsbot demo             # analyse the most urgent story of the last 24 h and send it
     python -m newsbot test-line        # send a sample alert to check your LINE setup
     python -m newsbot check-sources    # check every RSS feed in config.yaml
+    python -m newsbot paint-test       # paint sample cards in every image style (no LINE)
 """
 from __future__ import annotations
 
@@ -148,6 +149,40 @@ def cmd_test_line(args) -> int:
     return 0
 
 
+# Compared next to the configured model by paint-test (Cloudflare only).
+PAINT_TEST_MODELS = ("@cf/black-forest-labs/flux-2-klein-4b",)
+
+
+def cmd_paint_test(args) -> int:
+    from .art import DEFAULT_IMAGE_MODELS, IMAGE_STYLES, CloudflarePainter, GeminiPainter
+    from .pipeline import run_paint_test
+
+    cfg = load_config()
+    provider = cfg.card_image_provider
+    model = cfg.card_image_model or DEFAULT_IMAGE_MODELS[provider]
+    if provider == "cloudflare":
+        account = require_env("CLOUDFLARE_ACCOUNT_ID")
+        token = require_env("CLOUDFLARE_API_TOKEN")
+        painters = {m: CloudflarePainter(account, token, m)
+                    for m in dict.fromkeys((model, *PAINT_TEST_MODELS))}
+    else:
+        require_env("GEMINI_API_KEY")
+        painters = {model: GeminiPainter(model)}
+    lines = run_paint_test(cfg, painters, _images(cfg) or _local_images(), utcnow(),
+                           IMAGE_STYLES)
+    msg = "ภาพตัวอย่าง (ไม่ได้ส่งเข้า LINE):\n" + "\n".join(lines)
+    print(msg)
+    failed = sum("วาดไม่สำเร็จ" in line for line in lines)
+    annotate("warning" if failed else "notice", msg)
+    return 0 if failed < len(lines) else 1
+
+
+def _local_images():
+    from .imagehost import LocalImageHost
+
+    return LocalImageHost()
+
+
 def cmd_check_sources(args) -> int:
     cfg = load_config()
     results = fetch_all(cfg.sources, cfg.fetch_timeout)
@@ -185,6 +220,8 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_test_line)
     p = sub.add_parser("check-sources", help="ตรวจว่าแหล่งข่าวแต่ละแหล่งใช้ได้ไหม")
     p.set_defaults(func=cmd_check_sources)
+    p = sub.add_parser("paint-test", help="ให้ AI วาดภาพตัวอย่างทุกสไตล์ (ไม่ส่ง LINE)")
+    p.set_defaults(func=cmd_paint_test)
     args = parser.parse_args(argv)
     try:
         return args.func(args)

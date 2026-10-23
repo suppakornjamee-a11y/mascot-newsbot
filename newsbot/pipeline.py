@@ -372,6 +372,45 @@ def run_once(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
     return report
 
 
+# ---------------------------------------------------------------- paint test
+PAINT_SAMPLES = [
+    ("ฝนถล่มกรุงเทพฯ น้ำท่วมขังหลายเขต", "เตือนภัย · สภาพอากาศ", "serious",
+     "Heavy rain over a flooded Bangkok street at dusk, cars wading through brown water, "
+     "wet road reflecting street lights"),
+    ("ชงงบ 1,575 ล้าน ช่วยเกษตรกรน้ำท่วม", "เศรษฐกิจ · เกษตร", "smile",
+     "Thai farmers in conical hats inspecting a flooded green rice field under a cloudy sky"),
+]
+
+
+def run_paint_test(cfg: Config, painters: dict, images: ImageHost, now: datetime,
+                   styles: tuple[str, ...]) -> list[str]:
+    """Paint the sample scenes in every style with every painter (model name -> painter),
+    draw them as cards and upload them. Nothing goes to LINE. Returns one line per card."""
+    from .art import paint_prompt, _open
+    from .card import CardText, card_bytes, render_photo_card, thai_date
+
+    local = now.astimezone(TZ)
+    lines = []
+    for n, (headline, topic, mood, scene) in enumerate(PAINT_SAMPLES, 1):
+        for model, painter in painters.items():
+            for style in styles:
+                label = f"ภาพ {n} · {style} · {model.rsplit('/', 1)[-1]}"
+                try:
+                    picture = _open(painter.paint(paint_prompt(scene, style, mood == "serious"),
+                                                  "1:1"))
+                    text = CardText(topic, headline, "", f"{thai_date(now)} · {label}", mood,
+                                    False, "ภาพประกอบสร้างด้วย AI")
+                    full, _ = card_bytes(render_photo_card(text, picture, cfg.card_size,
+                                                           cfg.card_page_name))
+                    name = f"{model.rsplit('/', 1)[-1]}-{style}-{n}.png"
+                    url = images.upload(f"cards/paint-test/{local:%Y%m%d-%H%M}/{name}", full)
+                    lines.append(f"{label}: {url or 'บันทึกไว้ใน out/cards/paint-test'}")
+                except Exception as exc:
+                    lines.append(f"{label}: วาดไม่สำเร็จ — {str(exc)[:160]}")
+                    log.warning("paint test failed (%s): %s", label, exc)
+    return lines
+
+
 # ---------------------------------------------------------------- demo
 DEMO_MAX_ITEMS = 120
 

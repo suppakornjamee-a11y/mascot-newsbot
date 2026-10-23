@@ -138,6 +138,7 @@ AI ถูกสั่งไม่ให้วาดหรือเลือก�
 | `card.size` / `card.page_name` | 1080×1080 / ว่าง | ขนาดรูปโพสต์ และชื่อเพจมุมขวาบน |
 | `card.background` | ai | ภาพพื้นหลังการ์ด: `ai` ให้ AI วาด, `photo` ภาพถ่ายฟรีจาก Pixabay, `plain` พื้นสีเรียบ |
 | `card.image_provider` / `card.image_model` | cloudflare / ว่าง | ผู้ให้บริการ AI วาดภาพ และโมเดล ว่าง = FLUX.1 schnell ลองโมเดลอื่นของ Cloudflare ได้ เช่น `@cf/black-forest-labs/flux-2-klein-4b` คุณภาพดีกว่าแต่วาดฟรีได้ราววันละ 90 ภาพ |
+| `card.image_style` | painting | สไตล์ภาพที่ AI วาด: `painting` ภาพวาดกึ่งสมจริง, `realistic` เหมือนภาพถ่าย (คนอาจเข้าใจว่าเป็นภาพจริง), `flat` ภาพแบนแบบการ์ตูน ดูภาพตัวอย่างทุกแบบได้ด้วยคำสั่ง paint-test |
 | `card.ai_pick` | true | ให้ AI ตรวจภาพที่วาด หรือเลือกภาพถ่ายที่เข้ากับข่าว ถ้าปิด จะใช้ภาพแรกที่ได้ (ประหยัด AI 1 ครั้งต่อข่าว แต่ภาพอาจไม่เหมาะ) |
 | `editor.fact_check` | true | ให้ AI ตรวจโพสต์เทียบกับข่าวต้นทางก่อนส่ง ถ้าปิด จะประหยัด AI 1 ครั้งต่อข่าว |
 | `ai.gemini.review_model` | gemini-3.5-flash-lite | โมเดลที่ตรวจทานและเลือกภาพ แยกจากตัววิเคราะห์เพื่อไม่ให้กินโควตาฟรีของตัววิเคราะห์ |
@@ -189,6 +190,7 @@ python -m newsbot check-sources   # ตรวจแหล่งข่าว
 python -m newsbot test-line       # ส่งข้อความทดสอบเข้า LINE (รูปจะถูกบันทึกไว้ใน out/cards)
 python -m newsbot demo            # ส่งข่าวเด่น 24 ชม. เป็นตัวอย่าง
 python -m newsbot run --dry-run   # รันจริงกับ AI แต่แสดงผลบนจอแทนการส่ง LINE
+python -m newsbot paint-test      # ให้ AI วาดภาพตัวอย่างทุกสไตล์ บันทึกไว้ใน out/cards (ไม่ส่ง LINE)
 python -m newsbot run             # รันจริง
 python -m unittest -v             # ทดสอบระบบแบบออฟไลน์ (ไม่ใช้ key)
 ```
