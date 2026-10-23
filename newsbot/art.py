@@ -24,7 +24,6 @@ import io
 import json
 import logging
 import os
-import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -320,9 +319,11 @@ class CloudflarePainter:
                     "prompt": (None, prompt[:2048]), "width": (None, str(w)),
                     "height": (None, str(h))})
             else:                       # FLUX.1 schnell: JSON, square 1024 px
+                # No "seed": the live API rejects it (HTTP 400 "unevaluated properties
+                # '/seed'") although the docs' curl example sends one. Unseeded calls
+                # already give a different picture each time.
                 resp = self.http.post(url, headers=headers, timeout=self.timeout, json={
-                    "prompt": prompt[:2048], "steps": 6,
-                    "seed": random.randint(1, 2_000_000_000)})
+                    "prompt": prompt[:2048], "steps": 6})
         except requests.RequestException as exc:
             raise ArtError(f"ติดต่อ Cloudflare ไม่ได้ ({type(exc).__name__})") from None
         try:

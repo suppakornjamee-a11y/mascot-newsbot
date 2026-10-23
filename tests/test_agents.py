@@ -690,6 +690,7 @@ class CloudflarePainterTests(unittest.TestCase):
         self.assertEqual(call["headers"], {"Authorization": "Bearer TOKEN"})
         self.assertEqual(call["json"]["prompt"], "a flooded Thai village road")
         self.assertLessEqual(call["json"]["steps"], 8)            # the model's maximum
+        self.assertEqual(set(call["json"]), {"prompt", "steps"})  # the API rejects "seed"
         self.assertIsNone(call["files"])
 
     def test_flux2_sends_multipart_with_size(self):
