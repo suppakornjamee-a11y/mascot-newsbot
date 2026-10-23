@@ -261,9 +261,12 @@ PICK_SYSTEM = """คุณเป็นบรรณาธิการภาพข
 
 
 # ---------------------------------------------------------------- AI painter
+# FLUX weighs the start of a prompt most: the style comes first, or it paints a photo.
+PAINT_PREFIX = "Flat vector editorial illustration, simple shapes, soft shading, muted palette: "
 PAINT_STYLE = ("Editorial illustration for a Thai news post, modern and clean, soft natural "
-               "light, not photorealistic. No text, letters, numbers, logos or flags. No real or "
-               "identifiable people. Keep the lower third calm and uncluttered.")
+               "light, not photorealistic. No text, letters, numbers, signs, signboards, shop "
+               "fronts with lettering, logos or flags. No real or identifiable people. Keep the "
+               "lower third calm and uncluttered.")
 PAINT_SOMBER = " Respectful, somber muted colours. No injuries, blood or weapons."
 
 DEFAULT_IMAGE_MODELS = {
@@ -528,7 +531,7 @@ class ArtDirector:
 
     def _painting(self, event: Event, post: dict) -> tuple[Background | None, str]:
         subject = post.get("image_prompt") or post.get("card_headline") or event.headline
-        prompt = f"{subject}\n\n{PAINT_STYLE}"
+        prompt = f"{PAINT_PREFIX}{subject}\n\n{PAINT_STYLE}"
         if event.sensitive or post.get("mascot_mood") == "serious":
             prompt += PAINT_SOMBER
         w, h = self.cfg.card_size

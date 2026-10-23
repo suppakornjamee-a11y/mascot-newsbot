@@ -807,7 +807,9 @@ class AIPaintingTests(unittest.TestCase):
         painter = FakePainter()
         ArtDirector(self.cfg, None, None, painter).find(self.ev, self.post)
         prompt, ratio = painter.prompts[0]
-        self.assertTrue(prompt.startswith("A flooded Thai village road"))
+        self.assertTrue(prompt.startswith("Flat vector editorial illustration"))  # style first
+        self.assertIn("A flooded Thai village road", prompt)
+        self.assertIn("signboards", prompt)
         self.assertIn("No text", prompt)
         self.assertIn("somber", prompt)
         self.assertEqual(ratio, "1:1")
