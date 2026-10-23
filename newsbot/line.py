@@ -101,6 +101,9 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
     warnings = []
     if analysis.get("caution"):
         warnings.append(analysis["caution"])
+    if analysis.get("_backup_model") or analysis.get("_backup_writer"):
+        warnings.append("โมเดลหลักไม่ว่างหรือโควตาหมด ข่าวนี้ใช้โมเดลสำรองที่เล็กกว่า "
+                        "ตรวจข้อเท็จจริงให้ละเอียดขึ้น")
     if review.get("error"):
         warnings.append("ตรวจทานอัตโนมัติไม่สำเร็จ ตรวจตัวเลขและชื่อเทียบกับข่าวต้นทางเองก่อนโพสต์")
     if len(event.source_names) < 2 and not event.has_official:

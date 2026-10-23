@@ -157,6 +157,8 @@ class NewsEditor:
         }
         draft = self.ai.ask(system=write_system(self.cfg), payload=base, schema=POST_SCHEMA)
         post = self._normalize(draft, event, facts)
+        if getattr(self.ai, "last_fallback", False):
+            post["_backup_writer"] = self.cfg.review_model
         if not post["caption"] or not post["card_headline"]:
             raise AIError("บรรณาธิการส่งโพสต์ว่างกลับมา")  # retried on the next run
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from .config import Config
 from .fetch import Item
 from .state import Event
 from .timeutil import thai_datetime
+
+log = logging.getLogger("newsbot")
 
 CATEGORIES = {
     "disaster": "ภัยพิบัติ/อากาศ",
@@ -171,20 +174,36 @@ class Analyst:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        self.last_fallback = False   # did the last analysis-model call use the backup?
 
     def _call(self, *, model: str, effort: str | None, system: str, payload: dict,
               schema: dict, max_tokens: int, images: list[bytes] | None = None) -> dict:
         raise NotImplementedError
+
+    def _call_with_backup(self, *, model: str, effort: str | None, **kw) -> dict:
+        """Calls on the analysis model fall back once to the lighter review model when
+        it is busy (503), out of its daily quota, or times out, instead of failing."""
+        self.last_fallback = False
+        try:
+            return self._call(model=model, effort=effort, **kw)
+        except Exception as exc:
+            backup = self.cfg.review_model
+            if model != self.cfg.analysis_model or not backup or backup == model:
+                raise
+            log.warning("%s ใช้ไม่ได้ (%s) ใช้ %s แทน", model, str(exc)[:120], backup)
+            data = self._call(model=backup, effort=self.cfg.review_effort, **kw)
+            self.last_fallback = True
+            return data
 
     def ask(self, *, system: str, payload: dict, schema: dict, model: str | None = None,
             effort: str | None = None, max_tokens: int = 16000,
             images: list[bytes] | None = None) -> dict:
         """One structured call for the other agents. ``images`` are JPEG bytes shown
         before the payload, in order. Defaults to the analysis model."""
-        return self._call(model=model or self.cfg.analysis_model,
-                          effort=effort if effort is not None else self.cfg.analysis_effort,
-                          system=system, payload=payload, schema=schema,
-                          max_tokens=max_tokens, images=images)
+        return self._call_with_backup(
+            model=model or self.cfg.analysis_model,
+            effort=effort if effort is not None else self.cfg.analysis_effort,
+            system=system, payload=payload, schema=schema, max_tokens=max_tokens, images=images)
 
     @staticmethod
     def _user_text(payload: dict) -> str:
@@ -246,9 +265,12 @@ class Analyst:
                 for it in event.items[:8]
             ],
         }
-        data = self._call(model=self.cfg.analysis_model, effort=self.cfg.analysis_effort,
-                          system=analysis_system(self.cfg), payload=payload,
-                          schema=ANALYSIS_SCHEMA, max_tokens=16000)
+        data = self._call_with_backup(model=self.cfg.analysis_model,
+                                      effort=self.cfg.analysis_effort,
+                                      system=analysis_system(self.cfg), payload=payload,
+                                      schema=ANALYSIS_SCHEMA, max_tokens=16000)
+        if self.last_fallback:
+            data["_backup_model"] = self.cfg.review_model
         data["urgency"] = max(0, min(100, int(data.get("urgency", event.urgency))))
         data["sensitive"] = bool(data.get("sensitive", False))
         data["missing_info"] = [str(m).strip() for m in data.get("missing_info", [])

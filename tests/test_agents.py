@@ -828,7 +828,7 @@ class QuotaAndTimeTests(unittest.TestCase):
         calls = []
 
         def handler(request):
-            calls.append(1)
+            calls.append(str(request.url))
             return httpx.Response(429, json=self.DAILY)
 
         client = genai.Client(api_key="k", http_options=types.HttpOptions(
@@ -837,10 +837,73 @@ class QuotaAndTimeTests(unittest.TestCase):
                                 retry_waits=(0, 0))
         with self.assertRaises(QuotaExhausted):
             analyst.ask(system="s", payload={}, schema=PICK_SCHEMA)
-        self.assertEqual(len(calls), 1)                    # no pointless retries
+        # one call per model, no pointless retries: the analysis model, then its backup
+        self.assertEqual(len(calls), 2)
+        self.assertIn("gemini-3.8-flash", calls[0])
+        self.assertIn("gemini-3.5-flash-lite", calls[1])
         with self.assertRaises(QuotaExhausted):
             analyst.ask(system="s", payload={}, schema=PICK_SCHEMA)
-        self.assertEqual(len(calls), 1)                    # the rest of the run skips the API
+        self.assertEqual(len(calls), 2)                    # the rest of the run skips the API
+
+    def _gemini(self, handler):
+        from google import genai
+        from google.genai import types
+
+        from newsbot.ai import GeminiAnalyst
+
+        client = genai.Client(api_key="k", http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handler))))
+        return GeminiAnalyst(make_config(Path(tempfile.mkdtemp())), client=client,
+                             retry_waits=(0,))
+
+    def test_busy_analysis_model_uses_backup(self):
+        from newsbot.ai import ANALYSIS_SCHEMA
+
+        urls = []
+        facts = {k: FACTS[k] for k in ANALYSIS_SCHEMA["properties"]}
+
+        def handler(request):
+            urls.append(str(request.url))
+            if "gemini-3.8-flash" in str(request.url):
+                return httpx.Response(503, json={"error": {"code": 503, "status": "UNAVAILABLE",
+                                                           "message": "high demand"}})
+            return httpx.Response(200, json={"candidates": [{"content": {"role": "model",
+                "parts": [{"text": json.dumps(facts, ensure_ascii=False)}]},
+                "finishReason": "STOP"}]})
+
+        now = bkk(2026, 10, 21, 14, 5)
+        analyst = self._gemini(handler)
+        out = analyst.analyze(flood_event(now), now)
+        self.assertEqual(out["_backup_model"], "gemini-3.5-flash-lite")
+        self.assertEqual(sum("3.8-flash" in u for u in urls), 2)   # first try + one retry
+        self.assertIn("flash-lite", urls[-1])
+
+        flex = build_alert_messages(flood_event(now), {**out, **DRAFT}, now)[0]
+        self.assertIn("โมเดลสำรอง", json.dumps(flex, ensure_ascii=False))
+
+    def test_backup_failing_too_raises(self):
+        from google.genai import errors
+
+        def handler(request):
+            return httpx.Response(503, json={"error": {"code": 503, "status": "UNAVAILABLE",
+                                                       "message": "high demand"}})
+
+        now = bkk(2026, 10, 21, 14, 5)
+        with self.assertRaises(errors.ServerError):
+            self._gemini(handler).analyze(flood_event(now), now)
+
+    def test_editor_marks_backup_writer(self):
+        class BackupAI(ScriptedAI):
+            def ask(self, **kw):
+                out = super().ask(**kw)
+                self.last_fallback = kw["schema"] is POST_SCHEMA
+                return out
+
+        now = bkk(2026, 10, 21, 14, 5)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        post = NewsEditor(cfg, BackupAI(write=DRAFT, review=FIXED)).write(
+            flood_event(now), FACTS, now)
+        self.assertEqual(post["_backup_writer"], cfg.review_model)
 
     def test_default_client_has_a_timeout(self):
         from unittest import mock
