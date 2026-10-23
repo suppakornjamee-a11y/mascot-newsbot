@@ -734,7 +734,7 @@ class CloudflarePainterTests(unittest.TestCase):
         with mock.patch.dict("os.environ", env):
             art = ArtDirector.from_env(cfg)
         self.assertIsInstance(art.painter, CloudflarePainter)
-        self.assertEqual(art.painter.model, "@cf/black-forest-labs/flux-1-schnell")
+        self.assertEqual(art.painter.model, "@cf/black-forest-labs/flux-2-klein-4b")
         self.assertEqual(len(art.sources), 1)                     # Pixabay kept as fallback
         with mock.patch.dict("os.environ", {"CLOUDFLARE_ACCOUNT_ID": "", "PIXABAY_API_KEY": ""}):
             self.assertIsNone(ArtDirector.from_env(cfg).painter)

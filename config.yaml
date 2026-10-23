@@ -28,11 +28,11 @@ card:
   # ถ้าหาภาพที่เหมาะไม่ได้ ระบบจะใช้พื้นสีเรียบให้อัตโนมัติ
   background: ai
   # ผู้ให้บริการ AI วาดภาพ (ใช้เมื่อ background: ai)
-  #   cloudflare = Cloudflare Workers AI โมเดล FLUX ฟรีวันละ 10,000 neurons (ราว 130 ภาพ/วัน)
+  #   cloudflare = Cloudflare Workers AI โมเดล FLUX ฟรีวันละ 10,000 neurons (ราว 95 ภาพ/วัน)
   #                รีเซ็ต 07:00 น. เวลาไทย ต้องมี CLOUDFLARE_ACCOUNT_ID และ CLOUDFLARE_API_TOKEN
   #   gemini     = Gemini วาด (เสียเงิน ต้องเปิด billing)
   image_provider: cloudflare
-  image_model: ""        # เว้นว่าง = ค่าเริ่มต้น (cloudflare: @cf/black-forest-labs/flux-1-schnell)
+  image_model: ""        # เว้นว่าง = ค่าเริ่มต้น (cloudflare: @cf/black-forest-labs/flux-2-klein-4b)
   # สไตล์ภาพที่ AI วาด (ลองดูภาพตัวอย่างทุกแบบได้ด้วยคำสั่ง paint-test)
   #   painting  = ภาพวาดกึ่งสมจริง แสงและสัดส่วนสมจริง แต่ยังดูออกว่าเป็นภาพวาด
   #   realistic = เหมือนภาพถ่ายข่าว (ระวัง: คนอาจเข้าใจว่าเป็นภาพจากเหตุการณ์จริง)

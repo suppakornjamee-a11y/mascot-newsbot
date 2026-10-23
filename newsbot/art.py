@@ -289,7 +289,9 @@ def paint_prompt(subject: str, style: str = "painting", somber: bool = False) ->
     return f"{prefix}{subject}\n\n{tail}" + (PAINT_SOMBER if somber else "")
 
 DEFAULT_IMAGE_MODELS = {
-    "cloudflare": "@cf/black-forest-labs/flux-1-schnell",
+    # Chosen from a paint-test run: closest to a real scene while still clearly painted,
+    # and fewer garbled shop signs than FLUX.1 schnell.
+    "cloudflare": "@cf/black-forest-labs/flux-2-klein-4b",
     "gemini": "gemini-nano-banana-2.1",
 }
 
@@ -326,8 +328,9 @@ def check_system(style: str = "painting") -> str:
 
 class CloudflarePainter:
     """Workers AI text-to-image. The free allowance is 10,000 neurons a day, reset at
-    00:00 UTC (07:00 in Thailand); FLUX.1 schnell at 1024 px and 6 steps costs about 77,
-    so roughly 130 images a day. Needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."""
+    00:00 UTC (07:00 in Thailand). A 1024 px picture costs about 104 neurons with FLUX.2
+    klein 4B (roughly 95 a day) and 77 with FLUX.1 schnell at 6 steps (roughly 130).
+    Needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."""
 
     URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}"
     SIZES = {"1:1": (1024, 1024), "4:5": (1024, 1280), "5:4": (1280, 1024)}

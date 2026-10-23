@@ -150,7 +150,8 @@ def cmd_test_line(args) -> int:
 
 
 # Compared next to the configured model by paint-test (Cloudflare only).
-PAINT_TEST_MODELS = ("@cf/black-forest-labs/flux-2-klein-4b",)
+PAINT_TEST_MODELS = ("@cf/black-forest-labs/flux-2-klein-4b",
+                     "@cf/black-forest-labs/flux-1-schnell")
 
 
 def cmd_paint_test(args) -> int:
