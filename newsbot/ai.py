@@ -50,6 +50,14 @@ class AIError(RuntimeError):
     pass
 
 
+class QuotaExhausted(AIError):
+    """A model's free daily quota is used up. It comes back at midnight Pacific time
+    (14:00 or 15:00 in Thailand), so retrying within the same run is pointless."""
+
+
+CALL_TIMEOUT_MS = 90_000   # one Gemini call may not hold the run longer than this
+
+
 # ---------------------------------------------------------------- schemas
 TRIAGE_SCHEMA = {
     "type": "object",
@@ -310,7 +318,10 @@ class GeminiAnalyst(Analyst):
         self._types = types
         self._errors = errors
         self.retry_waits = retry_waits
-        self.client = client or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        self.exhausted: set[str] = set()   # models whose daily quota ran out in this run
+        self.client = client or genai.Client(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            http_options=types.HttpOptions(timeout=CALL_TIMEOUT_MS))
 
     def _config(self, system: str, schema: dict, max_tokens: int, level: str | None):
         t = self._types
@@ -330,13 +341,22 @@ class GeminiAnalyst(Analyst):
         )
 
     def _generate(self, model: str, contents: str, config):
+        if model in self.exhausted:
+            raise QuotaExhausted(f"โควตาฟรีรายวันของ {model} หมดแล้ว")
         waits = list(self.retry_waits)
         while True:
             try:
                 return self.client.models.generate_content(
                     model=model, contents=contents, config=config)
             except self._errors.APIError as exc:
-                if getattr(exc, "code", None) in self.RETRY_CODES and waits:
+                code = getattr(exc, "code", None)
+                if code == 429 and "PerDay" in str(exc):
+                    # The daily quota, not a per-minute limit: waiting will not help today.
+                    self.exhausted.add(model)
+                    raise QuotaExhausted(
+                        f"โควตาฟรีรายวันของ {model} หมดแล้ว จะกลับมาใช้ได้หลังเที่ยงคืน"
+                        "เวลาแปซิฟิก (14:00 น. เวลาไทย หรือ 15:00 น. ช่วงเดือน พ.ย.-มี.ค.)") from None
+                if code in self.RETRY_CODES and waits:
                     time.sleep(waits.pop(0))
                     continue
                 raise

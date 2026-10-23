@@ -12,6 +12,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 import traceback
 from datetime import timedelta
 
@@ -20,6 +21,11 @@ from .fetch import Item, fetch_all
 from .line import ConsoleNotifier, LineNotifier, build_alert_messages
 from .state import State
 from .timeutil import utcnow
+
+
+# GitHub stops the job at 15 minutes (timeout-minutes in the workflow) and the state of a
+# stopped run is lost. No new AI work starts after this, leaving room for the last step.
+RUN_BUDGET_SECONDS = 10 * 60
 
 
 def annotate(level: str, message: str) -> None:
@@ -52,7 +58,8 @@ def cmd_run(args) -> int:
     state = State.load(cfg.state_path)
     analyst = make_analyst(cfg)
     now = utcnow()
-    report = run_once(cfg, state, analyst, notifier, now, images=_images(cfg))
+    report = run_once(cfg, state, analyst, notifier, now, images=_images(cfg),
+                      deadline=time.monotonic() + RUN_BUDGET_SECONDS)
     state.save()
     u = analyst.usage
     summary = (report.summary() + f"\nAI ({cfg.ai_provider}): {u['calls']} ครั้ง, "
@@ -118,6 +125,7 @@ def cmd_test_line(args) -> int:
         "card_detail": "นี่คือรูปโพสต์ตัวอย่างจากน้องปิ๊ง ข่าวจริงจะใช้หน้าตาแบบนี้",
         "mascot_mood": "excited",
         "image_queries": ["heavy rain city street", "rain umbrella street", "rain clouds"],
+        "image_prompt": "Heavy rain over a Bangkok street at dusk, wet road reflecting lights",
         "review": {"checked": True, "issues": []},
     }
     from .pipeline import RunReport, default_art, make_post_image
@@ -163,6 +171,7 @@ def cmd_check_sources(args) -> int:
 def main(argv=None) -> int:
     load_dotenv(ROOT / ".env")
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("newsbot").setLevel(logging.INFO)   # progress lines in the Actions log
     parser = argparse.ArgumentParser(prog="newsbot")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="รันหนึ่งรอบ")

@@ -17,8 +17,8 @@ import httpx
 import httpx2
 from PIL import Image
 
-from newsbot.art import (PICK_SCHEMA, ArtDirector, Background, GeminiPainter, Photo,
-                         PexelsClient)
+from newsbot.art import (CHECK_SCHEMA, PICK_SCHEMA, ArtDirector, Background, GeminiPainter,
+                         PexelsClient, Photo)
 from newsbot.editor import POST_SCHEMA, REVIEW_SCHEMA, NewsEditor
 from newsbot.line import ConsoleNotifier, build_alert_messages
 from newsbot.pipeline import PostImage, RunReport, make_post_image, run_once
@@ -73,7 +73,7 @@ class ScriptedAI:
     def ask(self, *, system, payload, schema, model=None, effort=None, max_tokens=16000,
             images=None):
         name = {id(POST_SCHEMA): "write", id(REVIEW_SCHEMA): "review",
-                id(PICK_SCHEMA): "pick"}[id(schema)]
+                id(PICK_SCHEMA): "pick", id(CHECK_SCHEMA): "check"}[id(schema)]
         self.calls.append((name, payload, images, model))
         answer = self.answers[name]
         if isinstance(answer, Exception):
@@ -107,7 +107,7 @@ class EditorTests(unittest.TestCase):
         self.ev = flood_event(self.now)
 
     def test_schemas_are_strict(self):
-        for schema in (POST_SCHEMA, REVIEW_SCHEMA, PICK_SCHEMA):
+        for schema in (POST_SCHEMA, REVIEW_SCHEMA, PICK_SCHEMA, CHECK_SCHEMA):
             schema_is_strict(self, schema)
 
     def test_review_fixes_are_applied(self):
@@ -257,6 +257,7 @@ class ArtDirectorTests(unittest.TestCase):
         self.cfg.card_background = "photo"
         self.ev = flood_event(self.now)
         self.post = {"card_headline": "น้ำท่วมฉับพลัน", "mascot_mood": "serious",
+                     "where": "อ.เมือง จ.ทดสอบ",
                      "image_queries": ["flooded street Thailand", "heavy rain"]}
 
     def test_ai_ranks_and_best_photo_is_used(self):
@@ -273,6 +274,7 @@ class ArtDirectorTests(unittest.TestCase):
         self.assertEqual(model, self.cfg.review_model)
         self.assertEqual(len(images), 2)                       # 640 px photo was skipped
         self.assertTrue(payload["sad_or_sensitive_story"])
+        self.assertEqual(payload["story_location"], "อ.เมือง จ.ทดสอบ")   # for the landmark rule
         self.assertEqual([c["description"] for c in payload["candidates"]],
                          ["photo 1", "photo 3"])
         self.assertEqual(pex.searches[0], ("flooded street Thailand", "square"))
@@ -653,25 +655,288 @@ class ImageRequestTests(unittest.TestCase):
         self.assertEqual(body["model"], "claude-sonnet-5-5")    # ask() defaults to analysis model
 
 
+class CloudflarePainterTests(unittest.TestCase):
+    def _session(self, calls, status=200, body=None, error=None):
+        image = base64.b64encode(jpeg((1024, 1024))).decode()
+        body = body if body is not None else {"result": {"image": image}, "success": True,
+                                              "errors": [], "messages": []}
+
+        class Resp:
+            status_code, text = status, json.dumps(body)
+
+            def json(self):
+                return body
+
+        class Session:
+            def post(self, url, headers=None, timeout=None, json=None, files=None):
+                calls.append({"url": url, "headers": headers, "json": json, "files": files})
+                if error:
+                    raise error
+                return Resp()
+
+        return Session()
+
+    def test_flux1_request_and_image(self):
+        from newsbot.art import CloudflarePainter
+
+        calls = []
+        painter = CloudflarePainter("ACC", "TOKEN", "@cf/black-forest-labs/flux-1-schnell",
+                                    session=self._session(calls))
+        data = painter.paint("a flooded Thai village road", "1:1")
+        self.assertEqual(Image.open(io.BytesIO(data)).size, (1024, 1024))
+        call = calls[0]
+        self.assertEqual(call["url"], "https://api.cloudflare.com/client/v4/accounts/ACC/ai/run/"
+                                      "@cf/black-forest-labs/flux-1-schnell")
+        self.assertEqual(call["headers"], {"Authorization": "Bearer TOKEN"})
+        self.assertEqual(call["json"]["prompt"], "a flooded Thai village road")
+        self.assertLessEqual(call["json"]["steps"], 8)            # the model's maximum
+        self.assertIsNone(call["files"])
+
+    def test_flux2_sends_multipart_with_size(self):
+        from newsbot.art import CloudflarePainter
+
+        calls = []
+        CloudflarePainter("ACC", "T", "@cf/black-forest-labs/flux-2-klein-4b",
+                          session=self._session(calls)).paint("x", "4:5")
+        files = calls[0]["files"]
+        self.assertEqual((files["width"][1], files["height"][1]), ("1024", "1280"))
+        self.assertIsNone(calls[0]["json"])
+
+    def test_errors_are_readable_and_never_show_the_token(self):
+        import requests
+
+        from newsbot.art import ArtError, CloudflarePainter
+
+        quota = {"result": None, "success": False, "errors": [
+            {"code": 4006, "message": "you have used up your daily free allocation of 10,000 "
+                                      "neurons"}]}
+        painter = CloudflarePainter("ACC", "TOKEN", "m", session=self._session([], 429, quota))
+        with self.assertRaises(ArtError) as ctx:
+            painter.paint("x", "1:1")
+        self.assertIn("daily free allocation", str(ctx.exception))
+
+        err = requests.ConnectionError("Authorization: Bearer TOKEN failed")
+        painter = CloudflarePainter("ACC", "TOKEN", "m", session=self._session([], error=err))
+        with self.assertRaises(ArtError) as ctx:
+            painter.paint("x", "1:1")
+        self.assertNotIn("TOKEN", str(ctx.exception))
+
+    def test_painter_from_environment(self):
+        from unittest import mock
+
+        from newsbot.art import CloudflarePainter
+
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        cfg.card_background = "ai"
+        env = {"CLOUDFLARE_ACCOUNT_ID": "acc", "CLOUDFLARE_API_TOKEN": "tok",
+               "PIXABAY_API_KEY": "px"}
+        with mock.patch.dict("os.environ", env):
+            art = ArtDirector.from_env(cfg)
+        self.assertIsInstance(art.painter, CloudflarePainter)
+        self.assertEqual(art.painter.model, "@cf/black-forest-labs/flux-1-schnell")
+        self.assertEqual(len(art.sources), 1)                     # Pixabay kept as fallback
+        with mock.patch.dict("os.environ", {"CLOUDFLARE_ACCOUNT_ID": "", "PIXABAY_API_KEY": ""}):
+            self.assertIsNone(ArtDirector.from_env(cfg).painter)
+
+
+class FakePainter:
+    def __init__(self, error=None):
+        self.error = error
+        self.prompts = []
+        self.model = "fake"
+
+    def paint(self, prompt, aspect_ratio):
+        self.prompts.append((prompt, aspect_ratio))
+        if self.error:
+            raise self.error
+        return jpeg((1024, 1024), (30, 120, 90))
+
+
+class AIPaintingTests(unittest.TestCase):
+    def setUp(self):
+        now = bkk(2026, 10, 21, 14, 5)
+        self.cfg = make_config(Path(tempfile.mkdtemp()))
+        self.cfg.card_background = "ai"
+        self.ev = flood_event(now)
+        self.post = {"card_headline": "น้ำท่วมฉับพลัน", "mascot_mood": "serious",
+                     "where": "อ.เมือง จ.ทดสอบ", "image_prompt": "A flooded Thai village road",
+                     "image_queries": ["flooded street Thailand"]}
+
+    def test_painting_checked_and_used(self):
+        ai = ScriptedAI(check={"ok": True, "reason": ""})
+        bg, problem = ArtDirector(self.cfg, ai, None, FakePainter()).find(self.ev, self.post)
+        self.assertEqual((bg.credit, problem), ("ภาพประกอบสร้างด้วย AI", ""))
+        name, payload, images, model = ai.calls[0]
+        self.assertEqual((name, model, len(images)), ("check", self.cfg.review_model, 1))
+        self.assertEqual(payload["story_location"], "อ.เมือง จ.ทดสอบ")
+
+    def test_rejected_twice_falls_back_to_photo(self):
+        painter = FakePainter()
+        ai = ScriptedAI(check={"ok": False, "reason": "มีตัวอักษรมั่ว"},
+                        pick={"suitable": [0], "reason": ""})
+        pex = FakePexels({"flooded street Thailand": [photo(1)]})
+        bg, problem = ArtDirector(self.cfg, ai, pex, painter).find(self.ev, self.post)
+        self.assertEqual(len(painter.prompts), 2)                 # one retry with a new seed
+        self.assertEqual(bg.credit, "ภาพประกอบ: ช่างภาพ 1 / Pexels")
+        self.assertIn("ไม่ผ่านการตรวจ", problem)
+        self.assertIn("ตัวอักษรมั่ว", problem)
+
+    def test_painter_error_or_missing_falls_back(self):
+        pex = FakePexels({"flooded street Thailand": [photo(1)]})
+        bg, problem = ArtDirector(self.cfg, None, pex,
+                                  FakePainter(RuntimeError("Cloudflare HTTP 500"))).find(
+            self.ev, self.post)
+        self.assertEqual(bg.credit, "ภาพประกอบ: ช่างภาพ 1 / Pexels")
+        self.assertIn("Cloudflare HTTP 500", problem)
+
+        bg, problem = ArtDirector(self.cfg, None, pex, None).find(self.ev, self.post)
+        self.assertIn("CLOUDFLARE_ACCOUNT_ID", problem)
+        self.assertIsNotNone(bg)
+
+        bg, problem = ArtDirector(self.cfg, None, None, None).find(self.ev, self.post)
+        self.assertIsNone(bg)
+        self.assertIn("พื้นสีเรียบ", problem)
+
+    def test_check_failure_still_uses_painting(self):
+        ai = ScriptedAI(check=RuntimeError("503 UNAVAILABLE"))
+        bg, problem = ArtDirector(self.cfg, ai, None, FakePainter()).find(self.ev, self.post)
+        self.assertEqual((bg.credit, problem), ("ภาพประกอบสร้างด้วย AI", ""))
+
+    def test_prompt_carries_style_and_mood(self):
+        painter = FakePainter()
+        ArtDirector(self.cfg, None, None, painter).find(self.ev, self.post)
+        prompt, ratio = painter.prompts[0]
+        self.assertTrue(prompt.startswith("A flooded Thai village road"))
+        self.assertIn("No text", prompt)
+        self.assertIn("somber", prompt)
+        self.assertEqual(ratio, "1:1")
+
+
+class QuotaAndTimeTests(unittest.TestCase):
+    DAILY = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                       "message": "You exceeded your current quota",
+                       "details": [{"violations": [{
+                           "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                           "quotaValue": "20"}]}]}}
+
+    def test_daily_quota_stops_without_retrying(self):
+        from google import genai
+        from google.genai import types
+
+        from newsbot.ai import GeminiAnalyst, QuotaExhausted
+
+        calls = []
+
+        def handler(request):
+            calls.append(1)
+            return httpx.Response(429, json=self.DAILY)
+
+        client = genai.Client(api_key="k", http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handler))))
+        analyst = GeminiAnalyst(make_config(Path(tempfile.mkdtemp())), client=client,
+                                retry_waits=(0, 0))
+        with self.assertRaises(QuotaExhausted):
+            analyst.ask(system="s", payload={}, schema=PICK_SCHEMA)
+        self.assertEqual(len(calls), 1)                    # no pointless retries
+        with self.assertRaises(QuotaExhausted):
+            analyst.ask(system="s", payload={}, schema=PICK_SCHEMA)
+        self.assertEqual(len(calls), 1)                    # the rest of the run skips the API
+
+    def test_default_client_has_a_timeout(self):
+        from unittest import mock
+
+        from newsbot.ai import CALL_TIMEOUT_MS, GeminiAnalyst
+
+        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k"}):
+            analyst = GeminiAnalyst(make_config(Path(tempfile.mkdtemp())))
+        self.assertEqual(analyst.client._api_client._http_options.timeout, CALL_TIMEOUT_MS)
+
+    def test_quota_gone_keeps_story_for_next_run(self):
+        from newsbot.ai import QuotaExhausted
+
+        class OutOfQuota(FakeAnalyst):
+            def analyze(self, event, now):
+                self.analyze_calls += 1
+                raise QuotaExhausted("โควตาฟรีรายวันของ gemini-3.8-flash หมดแล้ว")
+
+        now = bkk(2026, 10, 21, 14, 5)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        cfg.digest_hours = []
+        state, ai = State(cfg.state_path), OutOfQuota()
+        rep = run_once(cfg, state, ai, ConsoleNotifier(echo=False), now,
+                       fetcher=lambda c: feeds_round1(now))
+        self.assertEqual(rep.errors, [])                   # a warning, not a failed run
+        self.assertTrue(any("โควตา" in w for w in rep.warnings))
+        flood = next(e for e in state.events.values() if "น้ำท่วม" in e.headline)
+        self.assertEqual((flood.status, flood.attempts), ("new", 0))
+
+        rep = run_once(cfg, state, FakeAnalyst(), ConsoleNotifier(echo=False),
+                       now + timedelta(minutes=30), fetcher=lambda c: feeds_round1(now))
+        self.assertEqual(len(rep.alerts_sent), 1)          # sent once the quota is back
+
+    def test_out_of_time_saves_work_for_next_run(self):
+        import time
+
+        from newsbot.pipeline import OUT_OF_TIME
+
+        now = bkk(2026, 10, 21, 14, 5)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        state, ai = State(cfg.state_path), FakeAnalyst()
+        rep = run_once(cfg, state, ai, ConsoleNotifier(echo=False), now,
+                       fetcher=lambda c: feeds_round1(now), deadline=time.monotonic() - 1)
+        self.assertEqual(ai.triage_calls, 0)
+        self.assertIn(OUT_OF_TIME, rep.warnings)
+        self.assertEqual(rep.errors, [])
+
+        rep = run_once(cfg, state, ai, ConsoleNotifier(echo=False), now + timedelta(minutes=30),
+                       fetcher=lambda c: feeds_round1(now))
+        self.assertEqual(rep.new_items, 3)                 # nothing was lost
+        self.assertEqual(len(rep.alerts_sent), 1)
+
+    def test_out_of_time_mid_run_stops_before_next_story(self):
+        import time
+
+        now = bkk(2026, 10, 21, 14, 5)
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        state = State(cfg.state_path)
+        run_once(cfg, state, FakeAnalyst(), ConsoleNotifier(echo=False), now,
+                 fetcher=lambda c: {}, deadline=None)
+        ev = flood_event(now)
+        ev.urgency = 85
+        state.events[ev.id] = ev
+        ai, line = FakeAnalyst(), ConsoleNotifier(echo=False)
+        from newsbot.pipeline import send_alerts
+
+        report = RunReport()
+        send_alerts(cfg, state, ai, line, now, report, deadline=time.monotonic() - 1)
+        self.assertEqual((ai.analyze_calls, len(line.batches)), (0, 0))
+        self.assertEqual(ev.status, "new")
+
+
 class ConfigTests(unittest.TestCase):
     def test_background_setting(self):
         from newsbot.config import ROOT, load_config
 
         cfg = load_config()
-        self.assertEqual(cfg.card_background, "photo")
+        self.assertEqual(cfg.card_background, "ai")
+        self.assertEqual((cfg.card_image_provider, cfg.card_image_model), ("cloudflare", ""))
         self.assertEqual(cfg.review_model, "gemini-3.5-flash-lite")
         self.assertNotEqual(cfg.review_model, cfg.analysis_model)
         self.assertTrue(cfg.card_ai_pick and cfg.editor_fact_check)
 
         text = (ROOT / "config.yaml").read_text(encoding="utf-8")
         tmp = Path(tempfile.mkdtemp()) / "config.yaml"
-        tmp.write_text(text.replace("background: photo", "background: Plain")
+        tmp.write_text(text.replace("background: ai", "background: Plain")
                        .replace("fact_check: true", "fact_check: false"), encoding="utf-8")
         cfg = load_config(tmp)
         self.assertEqual(cfg.card_background, "plain")
         self.assertFalse(cfg.editor_fact_check)
 
-        tmp.write_text(text.replace("background: photo", "background: video"), encoding="utf-8")
+        tmp.write_text(text.replace("background: ai", "background: video"), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            load_config(tmp)
+        tmp.write_text(text.replace("image_provider: cloudflare", "image_provider: midjourney"),
+                       encoding="utf-8")
         with self.assertRaises(SystemExit):
             load_config(tmp)
 

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
-from .ai import Analyst
+from .ai import Analyst, QuotaExhausted
 from .config import TZ, Config
 from .editor import NewsEditor
 from .fetch import Item, fetch_all
@@ -91,6 +92,18 @@ class RunReport:
 
 Fetcher = Callable[[Config], dict[str, list[Item] | Exception]]
 
+OUT_OF_TIME = "หมดเวลาของรอบนี้ ข่าวที่เหลือจะทำต่อในรอบหน้า"
+
+
+def out_of_time(deadline: float | None) -> bool:
+    """``deadline`` is a time.monotonic() value; None means no limit."""
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _warn_once(report: "RunReport", text: str) -> None:
+    if text not in report.warnings:
+        report.warnings.append(text)
+
 
 def default_fetcher(cfg: Config) -> dict[str, list[Item] | Exception]:
     return fetch_all(cfg.sources, cfg.fetch_timeout)
@@ -126,11 +139,19 @@ def collect_new_items(cfg: Config, state: State, results: dict, now: datetime,
 
 # ---------------------------------------------------------------- step: triage
 def triage_items(state: State, analyst: Analyst, items: list[Item], now: datetime,
-                 report: RunReport) -> None:
+                 report: RunReport, deadline: float | None = None) -> None:
+    batches = (len(items) + TRIAGE_BATCH - 1) // TRIAGE_BATCH
     for start in range(0, len(items), TRIAGE_BATCH):
+        if out_of_time(deadline):  # unseen items are picked up by the next run
+            _warn_once(report, OUT_OF_TIME)
+            break
         batch = items[start:start + TRIAGE_BATCH]
+        log.info("คัดกรองชุดที่ %d/%d (%d ข่าว)", start // TRIAGE_BATCH + 1, batches, len(batch))
         try:
             groups = analyst.triage(batch, state.recent_events(now), now)
+        except QuotaExhausted as exc:
+            _warn_once(report, str(exc))
+            break
         except Exception as exc:  # leave the batch unseen so the next run retries it
             report.errors.append(f"คัดกรองข่าวไม่สำเร็จ: {exc}")
             log.exception("triage failed")
@@ -215,7 +236,12 @@ def write_post(editor: Editor, ev: Event, analysis: dict, now: datetime) -> None
 # ---------------------------------------------------------------- step: alerts
 def send_alerts(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
                 now: datetime, report: RunReport, images: ImageHost | None = None,
-                editor: Editor | None = None, art: Art | None = None) -> None:
+                editor: Editor | None = None, art: Art | None = None,
+                deadline: float | None = None) -> None:
+    """Analyse, write and send the most urgent stories.
+
+    Stops early, keeping the remaining stories for the next run, when the AI's daily
+    quota is gone or the run is close to GitHub's time limit."""
     editor = editor or NewsEditor(cfg, analyst)
     max_age = timedelta(hours=cfg.alert_max_age_hours)
     quiet = in_hour_window(now, cfg.quiet_hours)
@@ -232,11 +258,18 @@ def send_alerts(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
         if quiet and ev.urgency < cfg.quiet_override:
             report.held_quiet += 1
             continue
+        if out_of_time(deadline):
+            _warn_once(report, OUT_OF_TIME)
+            break
         if ev.analysis and ev.analysis.get("_item_count") == len(ev.items):
             analysis = ev.analysis  # nothing new since the last analysis: reuse it
         else:
+            log.info("วิเคราะห์: %s", ev.headline[:60])
             try:
                 analysis = analyst.analyze(ev, now)
+            except QuotaExhausted as exc:  # not the story's fault: no attempt counted
+                _warn_once(report, str(exc))
+                break
             except Exception as exc:
                 ev.attempts += 1
                 if ev.attempts >= MAX_ANALYSIS_ATTEMPTS:
@@ -257,8 +290,15 @@ def send_alerts(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
             report.held_quiet += 1
             continue
 
+        if out_of_time(deadline):  # the analysis is kept; the post is written next run
+            _warn_once(report, OUT_OF_TIME)
+            break
+        log.info("เรียบเรียง: %s", ev.headline[:60])
         try:  # the editor writes the post only for stories that are going out now
             write_post(editor, ev, analysis, now)
+        except QuotaExhausted as exc:
+            _warn_once(report, str(exc))
+            break
         except Exception as exc:
             ev.attempts += 1
             if ev.attempts >= MAX_ANALYSIS_ATTEMPTS:
@@ -267,8 +307,10 @@ def send_alerts(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
             log.exception("editor failed")
             continue
 
+        # Short on time: send now with the plain card rather than search for a photo.
+        log.info("ทำการ์ดข่าว: %s", ev.headline[:60])
         image = make_post_image(cfg, images, ev, analysis, now, urgent=True, report=report,
-                                art=art)
+                                art=None if out_of_time(deadline) else art)
         try:
             notifier.push(build_alert_messages(ev, analysis, now, cfg.mascot.name, image=image))
         except Exception as exc:
@@ -312,17 +354,19 @@ def send_digest(cfg: Config, state: State, notifier: Notifier, now: datetime,
 def run_once(cfg: Config, state: State, analyst: Analyst, notifier: Notifier,
              now: datetime, fetcher: Fetcher = default_fetcher,
              images: ImageHost | None = None, editor: Editor | None = None,
-             art: Art | None = None) -> RunReport:
+             art: Art | None = None, deadline: float | None = None) -> RunReport:
     """``editor`` and ``art`` default to the AI editor and the picture agent built on
-    ``analyst``; tests pass their own."""
+    ``analyst``; tests pass their own. Past ``deadline`` (a time.monotonic() value) no
+    new AI work starts, so the run ends and saves its state before GitHub stops it."""
     report = RunReport()
     results = fetcher(cfg)
     items = collect_new_items(cfg, state, results, now, report)
+    log.info("อ่านข่าว %d รายการ ใหม่ %d", report.fetched, len(items))
     if items:
-        triage_items(state, analyst, items, now, report)
+        triage_items(state, analyst, items, now, report, deadline)
     if art is None and images is not None:
         art = default_art(cfg, analyst)
-    send_alerts(cfg, state, analyst, notifier, now, report, images, editor, art)
+    send_alerts(cfg, state, analyst, notifier, now, report, images, editor, art, deadline)
     send_digest(cfg, state, notifier, now, report)
     state.prune(now)
     return report

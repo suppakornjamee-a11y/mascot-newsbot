@@ -59,7 +59,8 @@ class Config:
     card_branch: str = "cards"
     card_background: str = "photo"        # photo (Pixabay/Pexels) | ai (Gemini paints) | plain
     card_ai_pick: bool = True              # let the AI choose among candidate photos
-    card_image_model: str = "gemini-nano-banana-2.1"
+    card_image_provider: str = "cloudflare"   # cloudflare (free allowance) | gemini (paid)
+    card_image_model: str = ""                  # empty: the provider's default model
     editor_fact_check: bool = True         # second AI pass checks the post against sources
 
     @property
@@ -68,6 +69,7 @@ class Config:
 
 
 BACKGROUNDS = ("photo", "ai", "plain")
+IMAGE_PROVIDERS = ("cloudflare", "gemini")
 
 AI_DEFAULTS = {
     "gemini": {"triage_model": "gemini-3.5-flash-lite", "triage_level": "low",
@@ -123,6 +125,11 @@ def load_config(path: Path | None = None) -> Config:
     background = str(card.get("background", defaults.card_background) or "plain").strip().lower()
     if background not in BACKGROUNDS:
         raise SystemExit(f"card.background ต้องเป็น photo, ai หรือ plain (ตอนนี้คือ '{background}')")
+    image_provider = str(card.get("image_provider", defaults.card_image_provider)
+                         or "cloudflare").strip().lower()
+    if image_provider not in IMAGE_PROVIDERS:
+        raise SystemExit(f"card.image_provider ต้องเป็น cloudflare หรือ gemini "
+                         f"(ตอนนี้คือ '{image_provider}')")
     return Config(
         mascot=Mascot(
             name=str(m.get("name", defaults.mascot.name)),
@@ -154,8 +161,8 @@ def load_config(path: Path | None = None) -> Config:
         card_branch=str(card.get("branch", "cards") or "cards"),
         card_background=background,
         card_ai_pick=bool(card.get("ai_pick", defaults.card_ai_pick)),
-        card_image_model=str(card.get("image_model", defaults.card_image_model)
-                             or defaults.card_image_model),
+        card_image_provider=image_provider,
+        card_image_model=str(card.get("image_model", "") or "").strip(),
         editor_fact_check=bool(editor.get("fact_check", defaults.editor_fact_check)),
     )
 
