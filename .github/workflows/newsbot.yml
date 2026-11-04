@@ -33,6 +33,14 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
+      # ตัวจัดวางอักษรไทยให้ Pillow (วรรณยุกต์ซ้อนสระบน เช่น "ติ้ง") ติดตั้งไม่ได้ก็ยังส่งข่าวได้ตามปกติ
+      - name: Thai text shaping (libraqm)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y --no-install-recommends libfribidi0 libraqm0 >/dev/null 2>&1 \
+            || (sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libfribidi0 libraqm0 >/dev/null)
+          python -c "from PIL import features; print('raqm:', features.check('raqm'))"
+
       - name: Restore state (ข่าวที่เคยเห็นแล้ว)
         uses: actions/cache/restore@v4
         with:

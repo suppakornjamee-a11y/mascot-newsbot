@@ -96,7 +96,7 @@ def build_alert_messages(event: Event, analysis: dict, now: datetime,
         body.append(_row("ตรวจทาน", f"แก้แล้ว {len(issues)} จุด: " + " / ".join(issues[:3])
                          if issues else "ผ่าน ไม่พบจุดที่ต้องแก้"))
     if credit:
-        body.append(_row("ภาพ", credit.replace("ภาพประกอบ: ", "")))
+        body.append(_row("ภาพ", credit.replace("ภาพประกอบ: ", "").replace("ภาพ: ", "")))
 
     warnings = []
     if analysis.get("caution"):

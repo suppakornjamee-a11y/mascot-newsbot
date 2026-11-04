@@ -3,8 +3,9 @@
 Two layouts:
 
 * ``render_photo_card``: a photo about the story fills the card, darkened at the bottom,
-  with the "ปิ๊ง!" pill, an orange topic tag, a big white headline, date + sources,
-  the photo credit, and the mascot as a sticker in the bottom-right corner.
+  with the "ปิ๊ง!" pill, an orange topic tag, a big white headline, a short detail in
+  small type, date + sources, the photo credit, and the mascot as a sticker in the
+  bottom-right corner.
 * ``render_card``: the original flat board ("ตัวอย่างโพสต์ประกาศข่าว"): light-blue
   background, white circle, headline, 1-2 sentence detail and the mascot. Used when
   no suitable photo was found.
@@ -17,7 +18,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, features
 
 from .config import ROOT, TZ
 
@@ -35,6 +36,7 @@ DOT_NORMAL = "#2BC4AE"
 DOT_URGENT = "#FF5A4E"
 ORANGE = "#FF7A2F"          # ส้มปิ๊ง: topic tag on photo cards
 PHOTO_META = "#E2E6EE"
+PHOTO_DETAIL = "#EEF1F6"
 PHOTO_CREDIT = "#B4BCC8"
 
 MOODS = ("smile", "excited", "serious")
@@ -337,6 +339,39 @@ def cover(photo: Image.Image, W: int, H: int, focus_y: float = 0.42) -> Image.Im
     return im.crop((left, top, left + W, top + H))
 
 
+def restyle_source(photo: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Give a photo from the news article the card's own look.
+
+    Zooms in a little (trims edges, where outlets put watermarks), evens out the colour
+    toward the brand palette, and, when the photo is too small to fill the card sharply,
+    sets it at the top over a blurred, darkened copy of itself. Returns a W x H image.
+    """
+    W, H = size
+    photo = photo.convert("RGB")
+    trim = 0.04
+    dx, dy = round(photo.width * trim), round(photo.height * trim)
+    photo = photo.crop((dx, dy, photo.width - dx, photo.height - dy))
+    photo = ImageEnhance.Contrast(photo).enhance(1.06)
+    photo = ImageEnhance.Color(photo).enhance(0.9)
+    tint = Image.new("RGB", photo.size, INK)
+    photo = Image.blend(photo, tint, 0.06)
+
+    if min(photo.width / W, photo.height / H) >= 0.8:      # big enough: fill the card
+        return cover(photo, W, H)
+    back = cover(photo, W, H).filter(ImageFilter.GaussianBlur(28))
+    back = Image.blend(back, Image.new("RGB", (W, H), INK), 0.35)
+    scale = min(W / photo.width, H * 0.72 / photo.height)
+    fg = photo.resize((round(photo.width * scale), round(photo.height * scale)), Image.LANCZOS)
+    mask = Image.new("L", fg.size, 255)                      # fade the bottom edge into the blur
+    fade = max(1, min(140, fg.height // 4))
+    md = ImageDraw.Draw(mask)
+    for i in range(fade):
+        y = fg.height - fade + i
+        md.line([(0, y), (fg.width, y)], fill=round(255 * (1 - (i + 1) / fade)))
+    back.paste(fg, ((W - fg.width) // 2, 0), mask)
+    return back
+
+
 def _shade(W: int, H: int, stops: list[tuple[float, float]], color: str = INK) -> Image.Image:
     """A vertical gradient of ``color``; ``stops`` are (y, opacity 0-1) pairs, eased."""
     stops = sorted(stops)
@@ -411,12 +446,13 @@ def _has_orphan(f, lines: list[str], width: float) -> bool:
     return min(lengths) < width * 0.25 or min(lengths) < max(lengths) * 0.4
 
 
-def _photo_headline(text: str, width: float) -> tuple[ImageFont.FreeTypeFont, int, list[str]]:
+def _photo_headline(text: str, width: float, sizes=PHOTO_HEAD_SIZES
+                    ) -> tuple[ImageFont.FreeTypeFont, int, list[str]]:
     """Largest size whose lines fit; prefer breaking at spaces (phrases), then words,
     and a slightly smaller size over a layout with a stray short line."""
     fallback = None
     for modes in (("phrase",), ("word",)):
-        for size, max_lines in PHOTO_HEAD_SIZES:
+        for size, max_lines in sizes:
             f = font("head", size)
             lines = wrap_balanced(f, text, lambda i: width, max_lines, modes)
             if not lines:
@@ -426,7 +462,7 @@ def _photo_headline(text: str, width: float) -> tuple[ImageFont.FreeTypeFont, in
             fallback = fallback or (f, size, lines)
     if fallback:
         return fallback
-    size = PHOTO_HEAD_SIZES[-1][0]
+    size = sizes[-1][0]
     f = font("head", size)
     lines = wrap(f, text, lambda i: width, "word")[:4]
     lines[-1] = _ellipsize(f, lines[-1], width)
@@ -450,20 +486,33 @@ def render_photo_card(t: CardText, photo: Image.Image, size: tuple[int, int] = (
         text_right = W - margin
     text_w = text_right - margin - 20
 
-    # ---- bottom text block, laid out from the bottom up: tag, headline, meta, credit
-    tag_font = font("body-bold", 26)
-    meta_font, credit_font = font("body-medium", 22), font("body", 19)
+    # ---- bottom text block, laid out from the bottom up:
+    #      topic tag, headline, detail (small), date + sources, credit
+    tag_font = font("body-bold", 28)
+    detail_font = font("body", 26)
+    meta_font, credit_font = font("body-medium", 21), font("body", 19)
     meta_lines = wrap(meta_font, t.meta, lambda i: text_w)[:2] if t.meta else []
     credit_lines = wrap(credit_font, t.credit, lambda i: text_w)[:2] if t.credit else []
-    hf, head_size, head_lines = _photo_headline(t.headline, text_w)
+    detail_lines: list[str] = []
+    if t.detail:
+        detail_lines = wrap(detail_font, t.detail, lambda i: text_w)
+        if len(detail_lines) > 3:
+            detail_lines = detail_lines[:3]
+            detail_lines[-1] = _ellipsize(detail_font, detail_lines[-1], text_w)
 
-    head_lh = round(head_size * 1.18)
-    meta_lh, credit_lh = 32, 28
-    tag_h = 54 if t.kicker else 0
-    credit_y = H - 60 - len(credit_lines) * credit_lh
-    meta_y = credit_y - len(meta_lines) * meta_lh - (8 if credit_lines else 0)
-    head_y = meta_y - len(head_lines) * head_lh - 18
-    tag_y = head_y - (tag_h + 24 if tag_h else 0)
+    meta_lh, credit_lh, detail_lh = 30, 27, 37
+    tag_h = 56 if t.kicker else 0
+    top_limit = margin + 64 + 48                       # below the "ปิ๊ง!" pill
+    credit_y = H - 56 - len(credit_lines) * credit_lh
+    meta_y = credit_y - len(meta_lines) * meta_lh - (6 if credit_lines else 0)
+    detail_y = meta_y - len(detail_lines) * detail_lh - (14 if detail_lines else 0)
+    for start in range(len(PHOTO_HEAD_SIZES)):         # shrink the headline until it all fits
+        hf, head_size, head_lines = _photo_headline(t.headline, text_w, PHOTO_HEAD_SIZES[start:])
+        head_lh = round(head_size * 1.18)
+        head_y = detail_y - len(head_lines) * head_lh - 16
+        tag_y = head_y - (tag_h + 22 if tag_h else 0)
+        if tag_y >= top_limit:
+            break
 
     # ---- darken: a light veil at the top (for the pill), a deep one behind the text
     im.alpha_composite(_shade(W, H, [(0, 0.55), (240, 0.0)]))
@@ -483,6 +532,8 @@ def render_photo_card(t: CardText, photo: Image.Image, size: tuple[int, int] = (
                **LANG)
 
     blocks = [(hf, head_lines, head_lh, WHITE, head_y, margin)]
+    if detail_lines:
+        blocks.append((detail_font, detail_lines, detail_lh, PHOTO_DETAIL, detail_y, margin))
     if meta_lines:
         blocks.append((meta_font, meta_lines, meta_lh, PHOTO_META, meta_y, margin))
     if credit_lines:

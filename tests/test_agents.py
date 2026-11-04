@@ -518,6 +518,111 @@ class PexelsClientTests(unittest.TestCase):
         self.assertIsNone(calls[-1][1])                           # key never sent to the CDN
 
 
+# ================================================================ news source photo
+class FakeSource:
+    """Stands in for art.SourcePhotos: fixed candidates, images by URL."""
+
+    def __init__(self, candidates, sizes=None, broken=()):
+        self.cands = candidates
+        self.sizes = sizes or {}
+        self.broken = set(broken)
+        self.downloads = []
+
+    def candidates(self, event):
+        return list(self.cands)
+
+    def download(self, url):
+        self.downloads.append(url)
+        if url in self.broken:
+            raise RuntimeError("404")
+        return jpeg(self.sizes.get(url, (1600, 1000)))
+
+
+class SourcePhotoTests(unittest.TestCase):
+    def setUp(self):
+        self.now = bkk(2026, 10, 21, 14, 5)
+        self.cfg = make_config(Path(tempfile.mkdtemp()))
+        self.cfg.card_background = "source"
+        self.ev = flood_event(self.now)
+        self.post = {"card_headline": "น้ำท่วมฉับพลัน", "mascot_mood": "serious",
+                     "image_queries": ["flooded street Thailand"]}
+
+    def test_article_photo_is_restyled_and_credited_to_the_outlet(self):
+        src = FakeSource([("https://news/a.jpg", "สำนักข่าว A", "https://news/a")])
+        ai = ScriptedAI(check={"ok": True, "reason": "ภาพถนนน้ำท่วมจากข่าว"})
+        bg, problem = ArtDirector(self.cfg, ai, [], source=src).find(self.ev, self.post)
+        self.assertEqual(problem, "")
+        self.assertEqual(bg.credit, "ภาพ: สำนักข่าว A")
+        self.assertEqual(bg.link, "https://news/a")
+        self.assertEqual(bg.image.size, tuple(self.cfg.card_size))   # restyled to the card
+        name, payload, images, model = ai.calls[0]
+        self.assertEqual((name, model), ("check", self.cfg.review_model))
+        self.assertTrue(payload["sad_or_sensitive_story"])
+
+    def test_rejected_or_tiny_photos_are_skipped(self):
+        src = FakeSource([("https://news/logo.jpg", "A", "https://news/a"),
+                          ("https://news/tiny.jpg", "B", "https://news/b"),
+                          ("https://news/ok.jpg", "C", "https://news/c")],
+                         sizes={"https://news/tiny.jpg": (300, 200)})
+
+        class FirstNo:
+            def __init__(self):
+                self.n = 0
+
+            def ask(self, **kw):
+                self.n += 1
+                return {"ok": self.n > 1, "reason": "โลโก้สำนักข่าว" if self.n == 1 else ""}
+
+        bg, _ = ArtDirector(self.cfg, FirstNo(), [], source=src).find(self.ev, self.post)
+        self.assertEqual(bg.credit, "ภาพ: C")
+
+    def test_no_article_photo_falls_back_to_stock_photo(self):
+        pex = FakePexels({"flooded street Thailand": [photo(1)]})
+        ai = ScriptedAI(pick={"suitable": [0], "reason": ""})
+        bg, problem = ArtDirector(self.cfg, ai, pex, source=FakeSource([])).find(self.ev, self.post)
+        self.assertEqual(bg.credit, "ภาพประกอบ: ช่างภาพ 1 / Pexels")
+        self.assertIn("ข่าวต้นทางไม่มีภาพ", bg.notes[0])
+
+    def test_no_photo_anywhere_gives_plain_card_with_reason(self):
+        bg, problem = ArtDirector(self.cfg, None, [], source=FakeSource([])).find(self.ev, self.post)
+        self.assertIsNone(bg)
+        self.assertIn("พื้นสีเรียบ", problem)
+
+    def test_feed_images_skip_logos_and_page_image_is_read(self):
+        from newsbot.art import SourcePhotos, looks_like_photo_url
+
+        self.assertTrue(looks_like_photo_url("https://www.matichon.co.th/wp-content/uploads/2026/11/x.jpg"))
+        self.assertFalse(looks_like_photo_url("https://www.khaosod.co.th/logo-share.png"))
+
+        class Resp:
+            status_code = 200
+
+            def __init__(self, body):
+                self.body = body
+
+            def iter_content(self, n):
+                yield self.body
+
+        class Session:
+            def get(self, url, **kw):
+                return Resp(b'<html><head><meta property="og:image" content="/img/story.jpg">'
+                            b"</head><body>")
+
+        self.ev.items[0].image = "https://site/logo.png"
+        self.ev.items[1].image = None
+        cands = SourcePhotos(session=Session()).candidates(self.ev)
+        self.assertTrue(cands)
+        self.assertTrue(all("logo" not in url for url, _, _ in cands))
+        self.assertTrue(cands[0][0].endswith("/img/story.jpg"))
+
+    def test_small_photo_sits_on_blurred_copy(self):
+        from newsbot.card import restyle_source
+
+        for src_size in ((2000, 1300), (640, 400), (500, 900)):
+            out = restyle_source(Image.new("RGB", src_size, (200, 60, 40)), (1080, 1350))
+            self.assertEqual(out.size, (1080, 1350))
+
+
 # ================================================================ photo card + pipeline
 class FakeArt:
     def __init__(self, background=None, problem=""):
@@ -537,7 +642,7 @@ class PhotoCardTests(unittest.TestCase):
         for size in ((1080, 1080), (1080, 1350)):
             for head in ("ข่าวดี", "สมาคมโรงแรมชี้ นักท่องเที่ยวภูเก็ต-กระบี่ชะลอตัวก่อนไฮซีซั่น "
                                    "เพราะเที่ยวบินตรงลดลงมากกว่าที่คาด ผู้ประกอบการกังวลรายได้ทั้งปี"):
-                img = render_photo_card(CardText("เศรษฐกิจ", head, "", "21 ต.ค. 2569 · ที่มา: A",
+                img = render_photo_card(CardText("เศรษฐกิจ", head, head * 2, "21 ต.ค. 2569 · ที่มา: A",
                                                  "serious", True, "ภาพประกอบ: X / Pexels"),
                                         bg, size)
                 self.assertEqual(img.size, size)
@@ -1035,7 +1140,7 @@ class ConfigTests(unittest.TestCase):
         from newsbot.config import ROOT, load_config
 
         cfg = load_config()
-        self.assertEqual(cfg.card_background, "ai")
+        self.assertEqual(cfg.card_background, "source")
         self.assertEqual((cfg.card_image_provider, cfg.card_image_model), ("cloudflare", ""))
         self.assertEqual(cfg.review_model, "gemini-3.5-flash-lite")
         self.assertNotEqual(cfg.review_model, cfg.analysis_model)
@@ -1043,13 +1148,13 @@ class ConfigTests(unittest.TestCase):
 
         text = (ROOT / "config.yaml").read_text(encoding="utf-8")
         tmp = Path(tempfile.mkdtemp()) / "config.yaml"
-        tmp.write_text(text.replace("background: ai", "background: Plain")
+        tmp.write_text(text.replace("background: source", "background: Plain")
                        .replace("fact_check: true", "fact_check: false"), encoding="utf-8")
         cfg = load_config(tmp)
         self.assertEqual(cfg.card_background, "plain")
         self.assertFalse(cfg.editor_fact_check)
 
-        tmp.write_text(text.replace("background: ai", "background: video"), encoding="utf-8")
+        tmp.write_text(text.replace("background: source", "background: video"), encoding="utf-8")
         with self.assertRaises(SystemExit):
             load_config(tmp)
         tmp.write_text(text.replace("image_provider: cloudflare", "image_provider: midjourney"),

@@ -57,7 +57,8 @@ class Config:
     card_size: tuple[int, int] = (1080, 1080)
     card_page_name: str = ""
     card_branch: str = "cards"
-    card_background: str = "photo"        # photo (Pixabay/Pexels) | ai (Gemini paints) | plain
+    card_background: str = "source"       # source (the article's photo) | photo (Pixabay/Pexels)
+                                          # | ai (Cloudflare/Gemini paints) | plain
     card_ai_pick: bool = True              # let the AI choose among candidate photos
     card_image_provider: str = "cloudflare"   # cloudflare (free allowance) | gemini (paid)
     card_image_model: str = ""                  # empty: the provider's default model
@@ -69,7 +70,7 @@ class Config:
         return "ANTHROPIC_API_KEY" if self.ai_provider == "claude" else "GEMINI_API_KEY"
 
 
-BACKGROUNDS = ("photo", "ai", "plain")
+BACKGROUNDS = ("source", "photo", "ai", "plain")
 IMAGE_PROVIDERS = ("cloudflare", "gemini")
 IMAGE_STYLES = ("painting", "realistic", "flat")   # keep in sync with art.PAINT_STYLES
 
@@ -126,7 +127,7 @@ def load_config(path: Path | None = None) -> Config:
     p = {**AI_DEFAULTS[provider], **(ai.get(provider) or {})}
     background = str(card.get("background", defaults.card_background) or "plain").strip().lower()
     if background not in BACKGROUNDS:
-        raise SystemExit(f"card.background ต้องเป็น photo, ai หรือ plain (ตอนนี้คือ '{background}')")
+        raise SystemExit(f"card.background ต้องเป็น source, photo, ai หรือ plain (ตอนนี้คือ '{background}')")
     image_provider = str(card.get("image_provider", defaults.card_image_provider)
                          or "cloudflare").strip().lower()
     if image_provider not in IMAGE_PROVIDERS:
