@@ -5,7 +5,8 @@
     python -m newsbot demo             # analyse the most urgent story of the last 24 h and send it
     python -m newsbot test-line        # send a sample alert to check your LINE setup
     python -m newsbot check-sources    # check every RSS feed in config.yaml
-    python -m newsbot paint-test       # paint sample cards in every image style (no LINE)
+    python -m newsbot paint-test       # paint sample cards in every image style, and
+                                       # restyle/repaint the latest news photos (no LINE)
 """
 from __future__ import annotations
 
@@ -169,8 +170,15 @@ def cmd_paint_test(args) -> int:
     else:
         require_env("GEMINI_API_KEY")
         painters = {model: GeminiPainter(model)}
-    lines = run_paint_test(cfg, painters, _images(cfg) or _local_images(), utcnow(),
-                           IMAGE_STYLES)
+    images = _images(cfg) or _local_images()
+    lines = run_paint_test(cfg, painters, images, utcnow(), IMAGE_STYLES)
+    # card.background: source — the latest news photos, restyled and repainted by FLUX.2
+    if provider == "cloudflare" and cfg.card_background == "source":
+        from .pipeline import run_redraw_test
+
+        redraw_model = model if "flux-2" in model else DEFAULT_IMAGE_MODELS["cloudflare"]
+        lines += run_redraw_test(cfg, CloudflarePainter(account, token, redraw_model), images,
+                                 utcnow())
     msg = "ภาพตัวอย่าง (ไม่ได้ส่งเข้า LINE):\n" + "\n".join(lines)
     print(msg)
     failed = sum("วาดไม่สำเร็จ" in line for line in lines)

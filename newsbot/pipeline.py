@@ -411,6 +411,53 @@ def run_paint_test(cfg: Config, painters: dict, images: ImageHost, now: datetime
     return lines
 
 
+def run_redraw_test(cfg: Config, painter, images: ImageHost, now: datetime, limit: int = 2,
+                    fetcher=None, source=None) -> list[str]:
+    """Take the photos of the latest news and make both cards for each: the news photo in
+    the brand look, and the picture FLUX.2 repaints from it. Nothing goes to LINE."""
+    from .art import SourcePhotos, _open, looks_like_photo_url, redraw_prompt, reference_jpeg
+    from .card import CardText, card_bytes, render_photo_card, restyle_source, thai_date
+    from .fetch import fetch_all
+
+    source = source or SourcePhotos(cfg.fetch_timeout)
+    feeds = (fetcher or (lambda c: fetch_all(c.sources, c.fetch_timeout)))(cfg)
+    local = now.astimezone(TZ)
+    lines: list[str] = []
+    for outlet, items in feeds.items():
+        if isinstance(items, Exception):
+            continue
+        for it in items[:5]:
+            if len(lines) >= limit:
+                return lines
+            url = it.image if it.image and looks_like_photo_url(it.image) else (
+                source.page_image(it.link) if it.link and not it.official else None)
+            if not url:
+                continue
+            n = len(lines) + 1
+            try:
+                photo = _open(source.download(url))
+                text = CardText("ทดลองภาพข่าว", it.title[:36], "",
+                                f"{thai_date(now)} · ที่มา: {outlet}", "smile", False,
+                                f"ภาพ: {outlet}")
+                folder = f"cards/paint-test/{local:%Y%m%d-%H%M}"
+                full, _ = card_bytes(render_photo_card(
+                    text, restyle_source(photo, cfg.card_size, cfg.card_source_look),
+                    cfg.card_size, cfg.card_page_name))
+                restyled = images.upload(f"{folder}/news-{n}-restyled.png", full)
+                text.credit = f"ภาพประกอบสร้างด้วย AI อ้างอิงภาพข่าว {outlet}"
+                painted = _open(painter.edit(redraw_prompt("the scene in image 0"),
+                                             reference_jpeg(photo), "1:1"))
+                full, _ = card_bytes(render_photo_card(text, painted, cfg.card_size,
+                                                       cfg.card_page_name))
+                redrawn = images.upload(f"{folder}/news-{n}-redrawn.png", full)
+                lines.append(f"ข่าว {n} ({outlet}): ภาพข่าวดัดแปลง {restyled or 'บันทึกในเครื่อง'}"
+                             f" · AI วาดใหม่ {redrawn or 'บันทึกในเครื่อง'}")
+            except Exception as exc:
+                lines.append(f"ข่าว {n} ({outlet}): วาดไม่สำเร็จ — {str(exc)[:160]}")
+                log.warning("redraw test failed: %s", exc)
+    return lines
+
+
 # ---------------------------------------------------------------- demo
 DEMO_MAX_ITEMS = 120
 

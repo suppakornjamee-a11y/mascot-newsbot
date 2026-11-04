@@ -32,6 +32,11 @@ card:
   #   plain  = พื้นสีเรียบแบบเดิม
   # ถ้าหาภาพที่เหมาะไม่ได้ ระบบจะใช้พื้นสีเรียบให้อัตโนมัติ
   background: source
+  # ใช้กับ background: source
+  source_redraw: true    # ให้ AI (Cloudflare FLUX.2) วาดภาพใหม่แบบสมจริงโดยดูภาพข่าวเป็นแบบ เปลี่ยนมุมกล้อง
+                         # ไม่มีตัวหนังสือหรือคนที่ระบุตัวได้ ติดป้าย "ภาพประกอบสร้างด้วย AI อ้างอิงภาพข่าว ..."
+                         # ถ้าวาดไม่ได้หรือไม่ผ่านการตรวจ จะใช้ภาพข่าวที่ดัดแปลงแทน (ต้องมี CLOUDFLARE_ACCOUNT_ID และ CLOUDFLARE_API_TOKEN)
+  source_look: brand     # การดัดแปลงภาพข่าว: brand = ซูมตัดขอบ + โทนสีแบรนด์ + ลายเส้นทแยง · light = ปรับนิดเดียว
   # ผู้ให้บริการ AI วาดภาพ (ใช้เมื่อ background: ai)
   #   cloudflare = Cloudflare Workers AI โมเดล FLUX ฟรีวันละ 10,000 neurons (ราว 95 ภาพ/วัน)
   #                รีเซ็ต 07:00 น. เวลาไทย ต้องมี CLOUDFLARE_ACCOUNT_ID และ CLOUDFLARE_API_TOKEN

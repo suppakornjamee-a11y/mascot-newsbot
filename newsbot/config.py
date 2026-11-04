@@ -63,6 +63,8 @@ class Config:
     card_image_provider: str = "cloudflare"   # cloudflare (free allowance) | gemini (paid)
     card_image_model: str = ""                  # empty: the provider's default model
     card_image_style: str = "painting"          # painting | realistic | flat
+    card_source_redraw: bool = True             # source: FLUX.2 repaints the news photo (Cloudflare)
+    card_source_look: str = "brand"             # source: brand (tones + lines) | light
     editor_fact_check: bool = True         # second AI pass checks the post against sources
 
     @property
@@ -138,6 +140,9 @@ def load_config(path: Path | None = None) -> Config:
     if image_style not in IMAGE_STYLES:
         raise SystemExit(f"card.image_style ต้องเป็น painting, realistic หรือ flat "
                          f"(ตอนนี้คือ '{image_style}')")
+    source_look = str(card.get("source_look", defaults.card_source_look) or "brand").strip().lower()
+    if source_look not in ("brand", "light"):
+        raise SystemExit(f"card.source_look ต้องเป็น brand หรือ light (ตอนนี้คือ '{source_look}')")
     return Config(
         mascot=Mascot(
             name=str(m.get("name", defaults.mascot.name)),
@@ -172,6 +177,8 @@ def load_config(path: Path | None = None) -> Config:
         card_image_provider=image_provider,
         card_image_model=str(card.get("image_model", "") or "").strip(),
         card_image_style=image_style,
+        card_source_redraw=bool(card.get("source_redraw", defaults.card_source_redraw)),
+        card_source_look=source_look,
         editor_fact_check=bool(editor.get("fact_check", defaults.editor_fact_check)),
     )
 

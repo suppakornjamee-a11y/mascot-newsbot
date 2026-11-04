@@ -623,6 +623,114 @@ class SourcePhotoTests(unittest.TestCase):
             self.assertEqual(out.size, (1080, 1350))
 
 
+class FakeEditPainter:
+    """FLUX.2 stand-in: paint() and edit() with a reference picture."""
+
+    def __init__(self, error=None):
+        self.error = error
+        self.edits = []
+        self.model = "@cf/black-forest-labs/flux-2-klein-4b"
+
+    def paint(self, prompt, aspect_ratio):
+        return jpeg((1024, 1024))
+
+    def edit(self, prompt, reference, aspect_ratio):
+        self.edits.append((prompt, reference, aspect_ratio))
+        if self.error:
+            raise self.error
+        return jpeg((1024, 1024), (90, 140, 200))
+
+
+class SourceRedrawTests(unittest.TestCase):
+    def setUp(self):
+        self.now = bkk(2026, 10, 21, 14, 5)
+        self.cfg = make_config(Path(tempfile.mkdtemp()))
+        self.cfg.card_background = "source"
+        self.ev = flood_event(self.now)
+        self.post = {"card_headline": "น้ำท่วมฉับพลัน", "mascot_mood": "serious",
+                     "image_prompt": "a flooded Thai street at dusk"}
+        self.src = FakeSource([("https://news/a.jpg", "สำนักข่าว A", "https://news/a")],
+                              sizes={"https://news/a.jpg": (1600, 1000)})
+
+    def test_flux_repaints_the_news_photo_and_labels_it(self):
+        painter = FakeEditPainter()
+        ai = ScriptedAI(check={"ok": True, "reason": ""})
+        bg, problem = ArtDirector(self.cfg, ai, [], painter, source=self.src).find(self.ev, self.post)
+        self.assertEqual(problem, "")
+        self.assertEqual(bg.credit, "ภาพประกอบสร้างด้วย AI อ้างอิงภาพข่าว สำนักข่าว A")
+        prompt, ref, ratio = painter.edits[0]
+        self.assertIn("image 0", prompt)
+        self.assertIn("a flooded Thai street at dusk", prompt)
+        self.assertIn("somber", prompt)                                   # serious story
+        self.assertLess(max(Image.open(io.BytesIO(ref)).size), 512)       # FLUX.2 klein limit
+        self.assertEqual(ratio, "1:1")
+        self.assertEqual([c[0] for c in ai.calls], ["check", "check"])    # photo, then repaint
+
+    def test_rejected_repaint_falls_back_to_the_restyled_photo(self):
+        class PhotoOkPaintNo:
+            def __init__(self):
+                self.systems = []
+
+            def ask(self, *, system, **kw):
+                self.systems.append(system)
+                return {"ok": len(self.systems) == 1, "reason": "หน้าคนเหมือนบุคคลจริง"}
+
+        ai, painter = PhotoOkPaintNo(), FakeEditPainter()
+        bg, _ = ArtDirector(self.cfg, ai, [], painter, source=self.src).find(self.ev, self.post)
+        self.assertEqual(bg.credit, "ภาพ: สำนักข่าว A")
+        self.assertIn("จึงใช้ภาพข่าวที่ดัดแปลงแทน", bg.notes[0])
+        self.assertEqual(len(painter.edits), 2)                           # tried twice
+        self.assertIn("ไม่เหมือนบุคคลจริงคนใด", ai.systems[1])             # realistic rule
+
+    def test_redraw_off_or_failing_keeps_the_photo(self):
+        bg, _ = ArtDirector(self.cfg, None, [], FakeEditPainter(RuntimeError("quota")),
+                            source=self.src).find(self.ev, self.post)
+        self.assertEqual(bg.credit, "ภาพ: สำนักข่าว A")
+        self.cfg.card_source_redraw = False
+        painter = FakeEditPainter()
+        bg, _ = ArtDirector(self.cfg, None, [], painter, source=self.src).find(self.ev, self.post)
+        self.assertEqual((bg.credit, painter.edits), ("ภาพ: สำนักข่าว A", []))
+
+    def test_cloudflare_edit_sends_the_reference(self):
+        from newsbot.art import ArtError, CloudflarePainter
+
+        calls = []
+        session = CloudflarePainterTests()._session(calls)
+        CloudflarePainter("ACC", "T", "@cf/black-forest-labs/flux-2-klein-4b",
+                          session=session).edit("p", b"\xff\xd8ref", "4:5")
+        files = calls[0]["files"]
+        self.assertEqual(files["input_image_0"], ("reference.jpg", b"\xff\xd8ref", "image/jpeg"))
+        self.assertEqual((files["width"][1], files["height"][1]), ("1024", "1280"))
+        with self.assertRaises(ArtError):
+            CloudflarePainter("ACC", "T", "@cf/black-forest-labs/flux-1-schnell",
+                              session=session).edit("p", b"x", "1:1")
+
+    def test_brand_and_light_looks(self):
+        from newsbot.card import restyle_source
+
+        red = Image.new("RGB", (1600, 1600), (220, 30, 30))
+        brand = restyle_source(red, (1080, 1080), "brand")
+        light = restyle_source(red, (1080, 1080), "light")
+        self.assertEqual(brand.size, light.size)
+        r, g, b = brand.getpixel((540, 540))
+        self.assertGreater(g, light.getpixel((540, 540))[1])   # re-coloured toward the brand tones
+
+    def test_redraw_test_makes_both_cards(self):
+        from newsbot.pipeline import run_redraw_test
+
+        now = self.now
+        host = FakeImageHost()
+        feeds = feeds_round1(now)
+        for items in feeds.values():
+            for it in items:
+                it.image = "https://news/a.jpg"
+        lines = run_redraw_test(self.cfg, FakeEditPainter(), host, now, limit=1,
+                                fetcher=lambda c: feeds, source=self.src)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("AI วาดใหม่", lines[0])
+        self.assertEqual(sum(k.endswith(".png") for k in host.files), 2)
+
+
 # ================================================================ photo card + pipeline
 class FakeArt:
     def __init__(self, background=None, problem=""):
@@ -1154,6 +1262,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.card_background, "plain")
         self.assertFalse(cfg.editor_fact_check)
 
+        self.assertTrue(load_config().card_source_redraw)
+        self.assertEqual(load_config().card_source_look, "brand")
+        tmp.write_text(text.replace("source_look: brand", "source_look: neon"), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            load_config(tmp)
         tmp.write_text(text.replace("background: source", "background: video"), encoding="utf-8")
         with self.assertRaises(SystemExit):
             load_config(tmp)

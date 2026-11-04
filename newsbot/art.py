@@ -4,8 +4,11 @@ card.background in config.yaml:
 
 * source - the photo from the news article itself (the feed's image, else the page's
           og:image), checked by the review model (not a logo, not a text graphic, nothing
-          graphic), then restyled a little for the card (card.restyle_source) and credited
-          to the outlet. Falls back to stock photos when the articles have no usable photo.
+          graphic). With card.source_redraw, FLUX.2 then paints a new realistic picture
+          using it as the reference (labelled as AI-made, checked again); otherwise, or if
+          that fails, the photo itself is restyled for the card (card.restyle_source,
+          card.source_look) and credited to the outlet. Falls back to stock photos when
+          the articles have no usable photo.
 * photo - search free stock photos with the editor's keywords, let the AI look at the
           candidates and rank the ones that fit (or reject them all), then download the
           best one. Sources, in order: Pixabay (PIXABAY_API_KEY, free on sign-up) and
@@ -375,6 +378,25 @@ PAINT_RULES = ("No text, letters, numbers, signs, signboards, shop fronts with l
 PAINT_SOMBER = " Respectful, somber muted colours. No injuries, blood or weapons."
 
 
+def redraw_prompt(subject: str, somber: bool = False) -> str:
+    """For painting a new picture with the news photo as image 0 (card.source_redraw)."""
+    return ("A brand-new realistic editorial news photograph. Use image 0 only as a reference "
+            "for the kind of place, weather, time of day and mood; change the camera angle and "
+            f"the composition. Scene: {subject}\n\n"
+            "Natural light, true-to-life detail, documentary style. Any people are generic, "
+            "unidentifiable figures seen from a distance or from behind. " + PAINT_RULES
+            + (PAINT_SOMBER if somber else ""))
+
+
+def reference_jpeg(image: Image.Image, max_side: int = 500) -> bytes:
+    """The reference picture for FLUX.2 klein, which needs inputs smaller than 512 x 512."""
+    small = image.convert("RGB")
+    small.thumbnail((max_side, max_side), Image.LANCZOS)
+    out = io.BytesIO()
+    small.save(out, "JPEG", quality=88)
+    return out.getvalue()
+
+
 def paint_prompt(subject: str, style: str = "painting", somber: bool = False) -> str:
     prefix, note = PAINT_STYLES.get(style, PAINT_STYLES["painting"])
     tail = f"{note} {PAINT_RULES}" if note else PAINT_RULES
@@ -452,6 +474,27 @@ class CloudflarePainter:
                     "prompt": prompt[:2048], "steps": 6})
         except requests.RequestException as exc:
             raise ArtError(f"ติดต่อ Cloudflare ไม่ได้ ({type(exc).__name__})") from None
+        return self._image(resp)
+
+    def edit(self, prompt: str, reference: bytes, aspect_ratio: str) -> bytes:
+        """Paint a new picture guided by ``reference`` (image 0 in the prompt). FLUX.2 only;
+        the 4B model needs the reference smaller than 512 x 512 (see reference_jpeg)."""
+        if "flux-2" not in self.model:
+            raise ArtError("โมเดลนี้วาดจากภาพต้นแบบไม่ได้ (ต้องเป็น FLUX.2)")
+        url = self.URL.format(account=self.account_id, model=self.model)
+        w, h = self.SIZES.get(aspect_ratio, (1024, 1024))
+        try:
+            resp = self.http.post(url, headers={"Authorization": f"Bearer {self.token}"},
+                                  timeout=self.timeout, files={
+                                      "prompt": (None, prompt[:2048]), "width": (None, str(w)),
+                                      "height": (None, str(h)),
+                                      "input_image_0": ("reference.jpg", reference, "image/jpeg")})
+        except requests.RequestException as exc:
+            raise ArtError(f"ติดต่อ Cloudflare ไม่ได้ ({type(exc).__name__})") from None
+        return self._image(resp)
+
+    @staticmethod
+    def _image(resp) -> bytes:
         try:
             data = resp.json()
         except ValueError:
@@ -506,6 +549,8 @@ class ArtDirector:
         sources, painter, source = [], None, None
         if cfg.card_background == "source":
             source = SourcePhotos(cfg.fetch_timeout)
+            if cfg.card_source_redraw and cfg.card_image_provider == "cloudflare":
+                painter = cls._painter_from_env(cfg)
         # stock photos: the background itself, or the fallback for source / ai
         if cfg.card_background in ("photo", "ai", "source"):
             pixabay = os.environ.get("PIXABAY_API_KEY", "").strip()
@@ -680,10 +725,41 @@ class ArtDirector:
             if not ok:
                 why = f"ภาพจากข่าวต้นทางไม่ผ่านการตรวจ ({reason})"
                 continue
-            return Background(image=restyle_source(image, self.cfg.card_size),
-                              credit=f"ภาพ: {outlet}", link=link,
-                              notes=[reason] if reason else []), ""
+            restyled = Background(image=restyle_source(image, self.cfg.card_size,
+                                                       self.cfg.card_source_look),
+                                  credit=f"ภาพ: {outlet}", link=link,
+                                  notes=[reason] if reason else [])
+            if self.cfg.card_source_redraw and hasattr(self.painter, "edit"):
+                redrawn, why_not = self._redraw(event, post, image, outlet, link)
+                if redrawn is not None:
+                    return redrawn, ""
+                restyled.notes.insert(0, f"{why_not} จึงใช้ภาพข่าวที่ดัดแปลงแทน")
+            return restyled, ""
         return None, why if tried else "ข่าวต้นทางไม่มีภาพ"
+
+    def _ratio(self) -> str:
+        w, h = self.cfg.card_size
+        return "1:1" if abs(w - h) < 0.1 * w else ("4:5" if h > w else "5:4")
+
+    def _redraw(self, event: Event, post: dict, image: Image.Image, outlet: str,
+                link: str) -> tuple[Background | None, str]:
+        """FLUX.2 paints a new realistic picture with the news photo as its reference."""
+        subject = post.get("image_prompt") or post.get("card_headline") or event.headline
+        somber = bool(event.sensitive or post.get("mascot_mood") == "serious")
+        prompt, ref, reason = redraw_prompt(subject, somber), reference_jpeg(image), ""
+        for _ in range(2):          # one more try if the check rejects the first picture
+            try:
+                log.info("AI วาดภาพใหม่จากภาพข่าว (%s)", getattr(self.painter, "model", ""))
+                painted = _open(self.painter.edit(prompt, ref, self._ratio()))
+            except Exception as exc:
+                log.warning("redraw failed: %s", exc)
+                return None, f"AI วาดใหม่จากภาพข่าวไม่สำเร็จ ({str(exc)[:80]})"
+            ok, reason = self._check_painting(event, post, painted, style="realistic")
+            if ok:
+                return Background(image=painted,
+                                  credit=f"ภาพประกอบสร้างด้วย AI อ้างอิงภาพข่าว {outlet}",
+                                  link=link, notes=[reason] if reason else []), ""
+        return None, f"ภาพที่ AI วาดใหม่ไม่ผ่านการตรวจ ({reason})"
 
     def _check_source(self, event: Event, post: dict, image: Image.Image) -> tuple[bool, str]:
         """The review model looks at the article photo. Without it, or if the check itself
@@ -729,8 +805,7 @@ class ArtDirector:
         subject = post.get("image_prompt") or post.get("card_headline") or event.headline
         prompt = paint_prompt(subject, self.cfg.card_image_style,
                               somber=bool(event.sensitive or post.get("mascot_mood") == "serious"))
-        w, h = self.cfg.card_size
-        ratio = "1:1" if abs(w - h) < 0.1 * w else ("4:5" if h > w else "5:4")
+        ratio = self._ratio()
         reason = ""
         for _ in range(2):          # one more try with a new seed if the check rejects it
             log.info("AI วาดภาพประกอบ (%s)", getattr(self.painter, "model", ""))
@@ -741,7 +816,8 @@ class ArtDirector:
                                   notes=[reason] if reason else []), ""
         return None, f"ภาพที่ AI วาดไม่ผ่านการตรวจ ({reason})"
 
-    def _check_painting(self, event: Event, post: dict, image: Image.Image) -> tuple[bool, str]:
+    def _check_painting(self, event: Event, post: dict, image: Image.Image,
+                        style: str | None = None) -> tuple[bool, str]:
         """The review model looks at the painting. Without it, or if the check itself
         fails, the painting is used: it is labelled as AI-made and the admin reviews it."""
         if self.ai is None:
@@ -757,7 +833,7 @@ class ArtDirector:
             "sad_or_sensitive_story": bool(event.sensitive or post.get("mascot_mood") == "serious"),
         }
         try:
-            data = self.ai.ask(system=check_system(self.cfg.card_image_style),
+            data = self.ai.ask(system=check_system(style or self.cfg.card_image_style),
                                payload=payload, schema=CHECK_SCHEMA,
                                images=[thumb.getvalue()], model=self.cfg.review_model,
                                effort="low", max_tokens=2000)
