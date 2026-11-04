@@ -64,7 +64,7 @@ class Config:
     card_image_model: str = ""                  # empty: the provider's default model
     card_image_style: str = "painting"          # painting | realistic | flat
     card_source_redraw: bool = True             # source: FLUX.2 repaints the news photo (Cloudflare)
-    card_source_look: str = "brand"             # source: brand (tones + lines) | light
+    card_source_look: str = "brand"             # source: brand (brand tones) | light
     editor_fact_check: bool = True         # second AI pass checks the post against sources
 
     @property

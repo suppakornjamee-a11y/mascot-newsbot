@@ -38,7 +38,7 @@ ORANGE = "#FF7A2F"          # ส้มปิ๊ง: topic tag on photo cards
 PHOTO_META = "#E2E6EE"
 PHOTO_DETAIL = "#EEF1F6"
 # Brand tones for photos taken from the news (card.source_look: brand): deep navy shadows,
-# blue-grey mid-tones, warm light highlights, and fine diagonal lines.
+# blue-grey mid-tones and warm light highlights.
 BRAND_SHADOW, BRAND_MID, BRAND_LIGHT = "#141B2B", "#3F6E8C", "#FFE7D1"
 SOURCE_LOOKS = ("brand", "light")
 PHOTO_CREDIT = "#B4BCC8"
@@ -343,23 +343,13 @@ def cover(photo: Image.Image, W: int, H: int, focus_y: float = 0.42) -> Image.Im
     return im.crop((left, top, left + W, top + H))
 
 
-def _stripes(im: Image.Image, gap: int = 12, strength: int = 20) -> Image.Image:
-    """Fine diagonal light lines over the whole picture: the page's own texture."""
-    W, H = im.size
-    mask = Image.new("L", (W, H), 0)
-    d = ImageDraw.Draw(mask)
-    for x in range(-H, W, gap):
-        d.line([(x, H), (x + H, 0)], fill=strength, width=2)
-    return Image.composite(Image.new("RGB", (W, H), "#FFFFFF"), im, mask)
-
-
 def restyle_source(photo: Image.Image, size: tuple[int, int], look: str = "brand") -> Image.Image:
     """Give a photo from the news article the card's own look. Returns a W x H image.
 
     light: zooms in a little (trims the edges, where outlets put watermarks) and evens out
            the colour toward the brand palette.
     brand: zooms in further and re-colours the photo in the brand tones (navy shadows, warm
-           highlights) with fine diagonal lines, so it reads as the page's own artwork.
+           highlights), so it reads as the page's own artwork.
     Either way, a photo too small to fill the card sharply is set at the top over a
     blurred, darkened copy of itself.
     """
@@ -378,8 +368,7 @@ def restyle_source(photo: Image.Image, size: tuple[int, int], look: str = "brand
         photo = Image.blend(photo, Image.new("RGB", photo.size, INK), 0.06)
 
     if min(photo.width / W, photo.height / H) >= 0.8:      # big enough: fill the card
-        out = cover(photo, W, H)
-        return _stripes(out) if look == "brand" else out
+        return cover(photo, W, H)
     back = cover(photo, W, H).filter(ImageFilter.GaussianBlur(28))
     back = Image.blend(back, Image.new("RGB", (W, H), INK), 0.35)
     scale = min(W / photo.width, H * 0.72 / photo.height)
@@ -391,7 +380,7 @@ def restyle_source(photo: Image.Image, size: tuple[int, int], look: str = "brand
         y = fg.height - fade + i
         md.line([(0, y), (fg.width, y)], fill=round(255 * (1 - (i + 1) / fade)))
     back.paste(fg, ((W - fg.width) // 2, 0), mask)
-    return _stripes(back) if look == "brand" else back
+    return back
 
 
 def _shade(W: int, H: int, stops: list[tuple[float, float]], color: str = INK) -> Image.Image:
