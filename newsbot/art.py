@@ -517,7 +517,8 @@ class ElevenLabsPainter:
     the Image & Video permission). Asynchronous: POST /v1/flows/image starts a generation, then
     GET /v1/flows/image/{id} is polled every 2 s or more until "completed" or "failed", and the
     picture is downloaded from content_url (a signed link that lasts about an hour).
-    A 1K picture with gpt-image-2.5-sunburst cost about 190 credits (~US$0.04) in Nov 2026.
+    gpt-image-2.5-sunburst, 1K, quality high (Nov 2026): about 580 credits (~US$0.12) when
+    repainting a news photo, about 190 from text alone.
     Failed generations are not charged."""
 
     URL = "https://api.elevenlabs.io/v1/flows/image"
