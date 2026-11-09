@@ -33,16 +33,20 @@ card:
   # ถ้าหาภาพที่เหมาะไม่ได้ ระบบจะใช้พื้นสีเรียบให้อัตโนมัติ
   background: source
   # ใช้กับ background: source
-  source_redraw: true    # ให้ AI (Cloudflare FLUX.2) วาดภาพใหม่แบบสมจริงโดยดูภาพข่าวเป็นแบบ เปลี่ยนมุมกล้อง
+  source_redraw: true    # ให้ AI (ผู้ให้บริการที่ image_provider) วาดภาพใหม่แบบสมจริงโดยดูภาพข่าวเป็นแบบ เปลี่ยนมุมกล้อง
                          # ไม่มีตัวหนังสือหรือคนที่ระบุตัวได้ ติดป้าย "ภาพประกอบสร้างด้วย AI อ้างอิงภาพข่าว ..."
-                         # ถ้าวาดไม่ได้หรือไม่ผ่านการตรวจ จะใช้ภาพข่าวที่ดัดแปลงแทน (ต้องมี CLOUDFLARE_ACCOUNT_ID และ CLOUDFLARE_API_TOKEN)
+                         # ถ้าวาดไม่ได้หรือไม่ผ่านการตรวจ จะใช้ภาพข่าวที่ดัดแปลงแทน
   source_look: brand     # การดัดแปลงภาพข่าว: brand = ซูมตัดขอบ + โทนสีแบรนด์ · light = ปรับนิดเดียว
-  # ผู้ให้บริการ AI วาดภาพ (ใช้เมื่อ background: ai)
+  # ผู้ให้บริการ AI วาดภาพ (ใช้กับ source_redraw และ background: ai)
+  #   elevenlabs = ElevenLabs Image & Video API (เสียเครดิต ต้องเป็นแผน Pro ขึ้นไป ต้องมี ELEVENLABS_API_KEY)
+  #                ค่าเริ่มต้น gpt-image-2.5-sunburst ราว 190 เครดิต/ภาพ (~1.3 บาท) · ลองโมเดลอื่นได้ที่ image_model เช่น
+  #                gemini-3.1-flash-image, bytedance-seedream-5-lite, gpt-image-2
+  #                ยังไม่มีคีย์ = ใช้ Cloudflare วาดแทนชั่วคราว (ถ้าตั้งค่า Cloudflare ไว้)
   #   cloudflare = Cloudflare Workers AI โมเดล FLUX ฟรีวันละ 10,000 neurons (ราว 95 ภาพ/วัน)
   #                รีเซ็ต 07:00 น. เวลาไทย ต้องมี CLOUDFLARE_ACCOUNT_ID และ CLOUDFLARE_API_TOKEN
   #   gemini     = Gemini วาด (เสียเงิน ต้องเปิด billing)
-  image_provider: cloudflare
-  image_model: ""        # เว้นว่าง = ค่าเริ่มต้น (cloudflare: @cf/black-forest-labs/flux-2-klein-4b)
+  image_provider: elevenlabs
+  image_model: ""        # เว้นว่าง = ค่าเริ่มต้น (elevenlabs: gpt-image-2.5-sunburst · cloudflare: @cf/black-forest-labs/flux-2-klein-4b)
   # สไตล์ภาพที่ AI วาด (ลองดูภาพตัวอย่างทุกแบบได้ด้วยคำสั่ง paint-test)
   #   painting  = ภาพวาดกึ่งสมจริง แสงและสัดส่วนสมจริง แต่ยังดูออกว่าเป็นภาพวาด
   #   realistic = เหมือนภาพถ่ายข่าว (ระวัง: คนอาจเข้าใจว่าเป็นภาพจากเหตุการณ์จริง)

@@ -414,7 +414,7 @@ def run_paint_test(cfg: Config, painters: dict, images: ImageHost, now: datetime
 def run_redraw_test(cfg: Config, painter, images: ImageHost, now: datetime, limit: int = 2,
                     fetcher=None, source=None) -> list[str]:
     """Take the photos of the latest news and make both cards for each: the news photo in
-    the brand look, and the picture FLUX.2 repaints from it. Nothing goes to LINE."""
+    the brand look, and the picture the AI (ElevenLabs or FLUX.2) repaints from it. Nothing goes to LINE."""
     from .art import SourcePhotos, _open, looks_like_photo_url, redraw_prompt, reference_jpeg
     from .card import CardText, card_bytes, render_photo_card, restyle_source, thai_date
     from .fetch import fetch_all
@@ -446,7 +446,8 @@ def run_redraw_test(cfg: Config, painter, images: ImageHost, now: datetime, limi
                 restyled = images.upload(f"{folder}/news-{n}-restyled.png", full)
                 text.credit = f"ภาพประกอบสร้างด้วย AI อ้างอิงภาพข่าว {outlet}"
                 painted = _open(painter.edit(redraw_prompt("the scene in image 0"),
-                                             reference_jpeg(photo), "1:1"))
+                                             reference_jpeg(photo, getattr(painter, "ref_side", 500)),
+                                             "1:1"))
                 full, _ = card_bytes(render_photo_card(text, painted, cfg.card_size,
                                                        cfg.card_page_name))
                 redrawn = images.upload(f"{folder}/news-{n}-redrawn.png", full)

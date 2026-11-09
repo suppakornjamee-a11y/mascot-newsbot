@@ -953,6 +953,108 @@ class CloudflarePainterTests(unittest.TestCase):
             self.assertIsNone(ArtDirector.from_env(cfg).painter)
 
 
+class ElevenLabsPainterTests(unittest.TestCase):
+    """POST /v1/flows/image starts the job, GET polls it, content_url is the picture."""
+
+    def _session(self, calls, statuses=("pending", "completed"), post_status=200, post_body=None,
+                 failed=None):
+        picture = jpeg((1024, 1024))
+        polls = list(statuses)
+
+        class Resp:
+            def __init__(self, status, body=None, content=b""):
+                self.status_code, self._body, self.content = status, body, content
+                self.text = json.dumps(body) if body is not None else ""
+
+            def json(self):
+                if self._body is None:
+                    raise ValueError
+                return self._body
+
+        class Session:
+            def post(self, url, headers=None, json=None, timeout=None):
+                calls.append(("POST", url, headers, json))
+                return Resp(post_status, post_body if post_body is not None else
+                            {"id": "GEN1", "status": "pending"})
+
+            def get(self, url, headers=None, timeout=None):
+                calls.append(("GET", url, headers, None))
+                if url == "https://signed.example/pic.png":
+                    return Resp(200, content=picture)
+                status = polls.pop(0) if polls else "completed"
+                body = {"id": "GEN1", "status": status}
+                if status == "completed":
+                    body.update(content_url="https://signed.example/pic.png",
+                                content_mime_type="image/png")
+                if status == "failed":
+                    body.update(failed or {})
+                return Resp(200, body)
+
+        return Session()
+
+    def test_paint_polls_then_downloads(self):
+        from newsbot.art import ElevenLabsPainter
+
+        calls, waits = [], []
+        painter = ElevenLabsPainter("KEY", "gpt-image-2.5-sunburst", session=self._session(calls),
+                                    sleep=waits.append)
+        data = painter.paint("a flooded Thai village road", "4:5")
+        self.assertEqual(Image.open(io.BytesIO(data)).size, (1024, 1024))
+        method, url, headers, body = calls[0]
+        self.assertEqual((method, url), ("POST", "https://api.elevenlabs.io/v1/flows/image"))
+        self.assertEqual(headers, {"xi-api-key": "KEY"})
+        self.assertEqual(body, {"model_id": "gpt-image-2.5-sunburst",
+                                "prompt": "a flooded Thai village road", "aspect_ratio": "4:5"})
+        self.assertEqual(calls[1][1], "https://api.elevenlabs.io/v1/flows/image/GEN1")
+        self.assertIsNone(calls[-1][2])                            # signed URL: no API key sent
+        self.assertTrue(all(w >= 2 for w in waits))                # never polls faster than 2 s
+
+    def test_edit_sends_the_reference_photo(self):
+        from newsbot.art import ElevenLabsPainter
+
+        calls = []
+        ref = jpeg((800, 600))
+        ElevenLabsPainter("KEY", "bytedance-seedream-5-lite", session=self._session(calls),
+                          sleep=lambda s: None).edit("scene", ref, "4:5")
+        body = calls[0][3]
+        self.assertEqual(body["aspect_ratio"], "3:4")              # Seedream has no 4:5
+        self.assertEqual(body["images"], [{"type": "inline_base64", "mime_type": "image/jpeg",
+                                           "content_base64": base64.b64encode(ref).decode()}])
+
+    def test_failures_are_readable_and_never_show_the_key(self):
+        from newsbot.art import ArtError, ElevenLabsPainter
+
+        painter = ElevenLabsPainter("SECRETKEY", "m", sleep=lambda s: None, session=self._session(
+            [], statuses=("failed",), failed={"failure_reason": "moderated",
+                                              "error_message": "blocked"}))
+        with self.assertRaises(ArtError) as ctx:
+            painter.paint("x", "1:1")
+        self.assertIn("moderated", str(ctx.exception))
+
+        plan = {"detail": {"status": "paid_plan_required", "message": "SECRETKEY needs Pro"}}
+        painter = ElevenLabsPainter("SECRETKEY", "m", sleep=lambda s: None,
+                                    session=self._session([], post_status=402, post_body=plan))
+        with self.assertRaises(ArtError) as ctx:
+            painter.paint("x", "1:1")
+        self.assertIn("Pro", str(ctx.exception))
+        self.assertNotIn("SECRETKEY", str(ctx.exception))
+
+    def test_painter_from_environment_falls_back_to_cloudflare(self):
+        from unittest import mock
+
+        from newsbot.art import CloudflarePainter, ElevenLabsPainter
+
+        cfg = make_config(Path(tempfile.mkdtemp()))
+        cfg.card_background, cfg.card_image_provider = "source", "elevenlabs"  # + source_redraw
+        with mock.patch.dict("os.environ", {"ELEVENLABS_API_KEY": "k"}):
+            painter = ArtDirector.from_env(cfg).painter
+        self.assertIsInstance(painter, ElevenLabsPainter)
+        self.assertEqual((painter.model, painter.ref_side), ("gpt-image-2.5-sunburst", 1024))
+        env = {"ELEVENLABS_API_KEY": "", "CLOUDFLARE_ACCOUNT_ID": "acc", "CLOUDFLARE_API_TOKEN": "t"}
+        with mock.patch.dict("os.environ", env):
+            self.assertIsInstance(ArtDirector.from_env(cfg).painter, CloudflarePainter)
+
+
 class FakePainter:
     def __init__(self, error=None):
         self.error = error
@@ -1249,7 +1351,7 @@ class ConfigTests(unittest.TestCase):
 
         cfg = load_config()
         self.assertEqual(cfg.card_background, "source")
-        self.assertEqual((cfg.card_image_provider, cfg.card_image_model), ("cloudflare", ""))
+        self.assertEqual((cfg.card_image_provider, cfg.card_image_model), ("elevenlabs", ""))
         self.assertEqual(cfg.review_model, "gemini-3.5-flash-lite")
         self.assertNotEqual(cfg.review_model, cfg.analysis_model)
         self.assertTrue(cfg.card_ai_pick and cfg.editor_fact_check)
@@ -1270,7 +1372,7 @@ class ConfigTests(unittest.TestCase):
         tmp.write_text(text.replace("background: source", "background: video"), encoding="utf-8")
         with self.assertRaises(SystemExit):
             load_config(tmp)
-        tmp.write_text(text.replace("image_provider: cloudflare", "image_provider: midjourney"),
+        tmp.write_text(text.replace("image_provider: elevenlabs", "image_provider: midjourney"),
                        encoding="utf-8")
         with self.assertRaises(SystemExit):
             load_config(tmp)

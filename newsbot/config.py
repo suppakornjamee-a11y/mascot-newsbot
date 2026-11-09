@@ -60,10 +60,10 @@ class Config:
     card_background: str = "source"       # source (the article's photo) | photo (Pixabay/Pexels)
                                           # | ai (Cloudflare/Gemini paints) | plain
     card_ai_pick: bool = True              # let the AI choose among candidate photos
-    card_image_provider: str = "cloudflare"   # cloudflare (free allowance) | gemini (paid)
+    card_image_provider: str = "cloudflare"   # elevenlabs (paid, Pro plan) | cloudflare (free) | gemini
     card_image_model: str = ""                  # empty: the provider's default model
     card_image_style: str = "painting"          # painting | realistic | flat
-    card_source_redraw: bool = True             # source: FLUX.2 repaints the news photo (Cloudflare)
+    card_source_redraw: bool = True             # source: AI repaints the news photo (ElevenLabs/Cloudflare)
     card_source_look: str = "brand"             # source: brand (brand tones) | light
     editor_fact_check: bool = True         # second AI pass checks the post against sources
 
@@ -73,7 +73,7 @@ class Config:
 
 
 BACKGROUNDS = ("source", "photo", "ai", "plain")
-IMAGE_PROVIDERS = ("cloudflare", "gemini")
+IMAGE_PROVIDERS = ("elevenlabs", "cloudflare", "gemini")
 IMAGE_STYLES = ("painting", "realistic", "flat")   # keep in sync with art.PAINT_STYLES
 
 AI_DEFAULTS = {
@@ -133,7 +133,7 @@ def load_config(path: Path | None = None) -> Config:
     image_provider = str(card.get("image_provider", defaults.card_image_provider)
                          or "cloudflare").strip().lower()
     if image_provider not in IMAGE_PROVIDERS:
-        raise SystemExit(f"card.image_provider ต้องเป็น cloudflare หรือ gemini "
+        raise SystemExit(f"card.image_provider ต้องเป็น elevenlabs, cloudflare หรือ gemini "
                          f"(ตอนนี้คือ '{image_provider}')")
     image_style = str(card.get("image_style", defaults.card_image_style)
                       or "painting").strip().lower()

@@ -150,35 +150,40 @@ def cmd_test_line(args) -> int:
     return 0
 
 
-# Compared next to the configured model by paint-test (Cloudflare only).
+# Compared next to the configured model by paint-test (Cloudflare only; ElevenLabs tests one model).
 PAINT_TEST_MODELS = ("@cf/black-forest-labs/flux-2-klein-4b",
                      "@cf/black-forest-labs/flux-1-schnell")
 
 
 def cmd_paint_test(args) -> int:
-    from .art import DEFAULT_IMAGE_MODELS, IMAGE_STYLES, CloudflarePainter, GeminiPainter
+    from .art import DEFAULT_IMAGE_MODELS, IMAGE_STYLES, CloudflarePainter, ElevenLabsPainter, GeminiPainter
     from .pipeline import run_paint_test
 
     cfg = load_config()
     provider = cfg.card_image_provider
     model = cfg.card_image_model or DEFAULT_IMAGE_MODELS[provider]
-    if provider == "cloudflare":
+    redraw = None
+    if provider == "elevenlabs":
+        # One model only: every picture costs credits
+        redraw = ElevenLabsPainter(require_env("ELEVENLABS_API_KEY"), model)
+        painters = {model: redraw}
+    elif provider == "cloudflare":
         account = require_env("CLOUDFLARE_ACCOUNT_ID")
         token = require_env("CLOUDFLARE_API_TOKEN")
         painters = {m: CloudflarePainter(account, token, m)
                     for m in dict.fromkeys((model, *PAINT_TEST_MODELS))}
+        redraw_model = model if "flux-2" in model else DEFAULT_IMAGE_MODELS["cloudflare"]
+        redraw = CloudflarePainter(account, token, redraw_model)
     else:
         require_env("GEMINI_API_KEY")
         painters = {model: GeminiPainter(model)}
     images = _images(cfg) or _local_images()
     lines = run_paint_test(cfg, painters, images, utcnow(), IMAGE_STYLES)
-    # card.background: source — the latest news photos, restyled and repainted by FLUX.2
-    if provider == "cloudflare" and cfg.card_background == "source":
+    # card.background: source — the latest news photos, restyled and repainted by the AI
+    if redraw is not None and cfg.card_background == "source":
         from .pipeline import run_redraw_test
 
-        redraw_model = model if "flux-2" in model else DEFAULT_IMAGE_MODELS["cloudflare"]
-        lines += run_redraw_test(cfg, CloudflarePainter(account, token, redraw_model), images,
-                                 utcnow())
+        lines += run_redraw_test(cfg, redraw, images, utcnow())
     msg = "ภาพตัวอย่าง (ไม่ได้ส่งเข้า LINE):\n" + "\n".join(lines)
     print(msg)
     failed = sum("วาดไม่สำเร็จ" in line for line in lines)

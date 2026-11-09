@@ -407,6 +407,9 @@ DEFAULT_IMAGE_MODELS = {
     # and fewer garbled shop signs than FLUX.1 schnell.
     "cloudflare": "@cf/black-forest-labs/flux-2-klein-4b",
     "gemini": "gemini-nano-banana-2.1",
+    # ElevenLabs' own pick for drawing from a reference photo, and the cheapest of the models
+    # priced on 10 Nov 2026 (gemini-3.1-flash-image ~406 credits, seedream-5-lite ~212).
+    "elevenlabs": "gpt-image-2.5-sunburst",
 }
 
 CHECK_SCHEMA = {
@@ -509,6 +512,118 @@ class CloudflarePainter:
         return base64.b64decode(image)
 
 
+class ElevenLabsPainter:
+    """ElevenLabs Image & Video API (paid: needs a Pro plan or above, and ELEVENLABS_API_KEY with
+    the Image & Video permission). Asynchronous: POST /v1/flows/image starts a generation, then
+    GET /v1/flows/image/{id} is polled every 2 s or more until "completed" or "failed", and the
+    picture is downloaded from content_url (a signed link that lasts about an hour).
+    A 1K picture with gpt-image-2.5-sunburst cost about 190 credits (~US$0.04) in Nov 2026.
+    Failed generations are not charged."""
+
+    URL = "https://api.elevenlabs.io/v1/flows/image"
+    ref_side = 1024     # the reference photo can be larger than FLUX.2 klein's 512 px limit
+    # Ratios some models lack, mapped to the closest one they have.
+    RATIO_FALLBACK = {
+        "bytedance": {"4:5": "3:4", "5:4": "4:3"},
+        "gpt-image-1": {"4:5": "2:3", "5:4": "3:2"},
+    }
+
+    def __init__(self, api_key: str, model: str, timeout: float = 150, poll: float = 2.0,
+                 session: requests.Session | None = None, sleep=time.sleep):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.poll = max(2.0, poll)          # the API asks for no more than one poll every 2 s
+        self.http = session or requests.Session()
+        self.sleep = sleep
+
+    def _ratio(self, aspect_ratio: str) -> str:
+        for prefix, table in self.RATIO_FALLBACK.items():
+            if self.model.startswith(prefix):
+                return table.get(aspect_ratio, aspect_ratio)
+        return aspect_ratio
+
+    def paint(self, prompt: str, aspect_ratio: str) -> bytes:
+        return self._run({"model_id": self.model, "prompt": prompt[:4000],
+                          "aspect_ratio": self._ratio(aspect_ratio)})
+
+    def edit(self, prompt: str, reference: bytes, aspect_ratio: str) -> bytes:
+        """Paint a new picture guided by ``reference`` (image 0 in the prompt)."""
+        return self._run({"model_id": self.model, "prompt": prompt[:4000],
+                          "aspect_ratio": self._ratio(aspect_ratio),
+                          "images": [{"type": "inline_base64", "mime_type": "image/jpeg",
+                                      "content_base64": base64.b64encode(reference).decode()}]})
+
+    def _run(self, body: dict) -> bytes:
+        headers = {"xi-api-key": self.api_key}
+        try:
+            resp = self.http.post(self.URL, headers=headers, json=body, timeout=30)
+        except requests.RequestException as exc:
+            raise ArtError(f"ติดต่อ ElevenLabs ไม่ได้ ({type(exc).__name__})") from None
+        if resp.status_code != 200:
+            raise ArtError(self._error(resp))
+        gid = (self._json(resp) or {}).get("id")
+        if not gid:
+            raise ArtError("ElevenLabs ไม่ได้ส่งรหัสงานวาดกลับมา")
+        deadline, wait = time.monotonic() + self.timeout, self.poll
+        while True:
+            self.sleep(wait)
+            try:
+                resp = self.http.get(f"{self.URL}/{gid}", headers=headers, timeout=30)
+            except requests.RequestException as exc:
+                raise ArtError(f"ติดต่อ ElevenLabs ไม่ได้ ({type(exc).__name__})") from None
+            if resp.status_code == 429:         # polled too often: back off
+                wait = min(wait * 2, 30)
+            elif resp.status_code != 200:
+                raise ArtError(self._error(resp))
+            else:
+                data = self._json(resp) or {}
+                status = data.get("status")
+                if status == "completed":
+                    return self._download(data.get("content_url"))
+                if status == "failed":
+                    why = " ".join(str(x) for x in (data.get("failure_reason"),
+                                                   data.get("error_message")) if x)
+                    raise ArtError(f"ElevenLabs วาดไม่สำเร็จ ({why or 'ไม่ทราบสาเหตุ'})")
+                wait = min(wait * 1.5, 10)
+            if time.monotonic() > deadline:
+                raise ArtError(f"ElevenLabs วาดนานเกิน {int(self.timeout)} วินาที")
+
+    def _download(self, url: str | None) -> bytes:
+        if not url:
+            raise ArtError("ElevenLabs ไม่ได้ส่งลิงก์ภาพกลับมา")
+        try:
+            resp = self.http.get(url, timeout=60)     # signed URL: no API key
+        except requests.RequestException as exc:
+            raise ArtError(f"ดาวน์โหลดภาพจาก ElevenLabs ไม่ได้ ({type(exc).__name__})") from None
+        if resp.status_code != 200 or not resp.content:
+            raise ArtError(f"ดาวน์โหลดภาพจาก ElevenLabs ไม่ได้ (HTTP {resp.status_code})")
+        return resp.content
+
+    @staticmethod
+    def _json(resp):
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+    def _error(self, resp) -> str:
+        data = self._json(resp) or {}
+        detail = data.get("detail")
+        if isinstance(detail, dict):
+            message = str(detail.get("message") or detail.get("status") or "")
+        elif isinstance(detail, list) and detail:
+            message = "; ".join(str(d.get("msg", d)) if isinstance(d, dict) else str(d)
+                                for d in detail[:2])
+        else:
+            message = str(detail or resp.text[:160])
+        if resp.status_code == 402 or "paid_plan_required" in message:
+            return "ElevenLabs: แผนที่ใช้อยู่สร้างภาพผ่าน API ไม่ได้ (ต้องเป็น Pro ขึ้นไป)"
+        if resp.status_code == 401:
+            return "ElevenLabs: คีย์ไม่ถูกต้อง หรือคีย์ไม่มีสิทธิ์ Image & Video"
+        return f"ElevenLabs HTTP {resp.status_code}: {message.replace(self.api_key, '***')}"[:240]
+
+
 class GeminiPainter:
     """Image generation through the Gemini Interactions API (paid, experimental)."""
 
@@ -549,7 +664,7 @@ class ArtDirector:
         sources, painter, source = [], None, None
         if cfg.card_background == "source":
             source = SourcePhotos(cfg.fetch_timeout)
-            if cfg.card_source_redraw and cfg.card_image_provider == "cloudflare":
+            if cfg.card_source_redraw and cfg.card_image_provider in ("cloudflare", "elevenlabs"):
                 painter = cls._painter_from_env(cfg)
         # stock photos: the background itself, or the fallback for source / ai
         if cfg.card_background in ("photo", "ai", "source"):
@@ -568,6 +683,13 @@ class ArtDirector:
     def _painter_from_env(cfg: Config):
         provider = cfg.card_image_provider
         model = cfg.card_image_model or DEFAULT_IMAGE_MODELS[provider]
+        if provider == "elevenlabs":
+            key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+            if key:
+                return ElevenLabsPainter(key, model)
+            # No key yet: keep drawing with Cloudflare if that is set up, so cards still get art
+            log.warning("ELEVENLABS_API_KEY ไม่ได้ตั้งค่า ใช้ Cloudflare วาดแทน")
+            provider, model = "cloudflare", DEFAULT_IMAGE_MODELS["cloudflare"]
         if provider == "cloudflare":
             account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
             token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
@@ -577,6 +699,8 @@ class ArtDirector:
         return None
 
     def _missing_painter(self) -> str:
+        if self.cfg.card_image_provider == "elevenlabs":
+            return "ยังไม่ได้ตั้งค่า ELEVENLABS_API_KEY"
         if self.cfg.card_image_provider == "cloudflare":
             return "ยังไม่ได้ตั้งค่า CLOUDFLARE_ACCOUNT_ID และ CLOUDFLARE_API_TOKEN"
         return "ยังไม่ได้ตั้งค่า GEMINI_API_KEY"
@@ -743,10 +867,12 @@ class ArtDirector:
 
     def _redraw(self, event: Event, post: dict, image: Image.Image, outlet: str,
                 link: str) -> tuple[Background | None, str]:
-        """FLUX.2 paints a new realistic picture with the news photo as its reference."""
+        """The painter (ElevenLabs or FLUX.2) paints a new realistic picture with the news photo
+        as its reference."""
         subject = post.get("image_prompt") or post.get("card_headline") or event.headline
         somber = bool(event.sensitive or post.get("mascot_mood") == "serious")
-        prompt, ref, reason = redraw_prompt(subject, somber), reference_jpeg(image), ""
+        ref = reference_jpeg(image, getattr(self.painter, "ref_side", 500))
+        prompt, reason = redraw_prompt(subject, somber), ""
         for _ in range(2):          # one more try if the check rejects the first picture
             try:
                 log.info("AI วาดภาพใหม่จากภาพข่าว (%s)", getattr(self.painter, "model", ""))
